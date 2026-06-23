@@ -541,5 +541,61 @@ export const dbService = {
       }
     }
     return closest;
+  },
+
+  /**
+   * Creates a dispatch record (a sent/queued complaint) in the `dispatches`
+   * collection. Idempotent on `idempotencyKey` (issueId_tier) so re-running
+   * dispatch for the same tier never duplicates. Server-write-only per Doc 5 §2.
+   */
+  async createDispatch(dispatchData: any): Promise<any> {
+    const idempotencyKey = dispatchData.idempotencyKey || `${dispatchData.issueId}_${dispatchData.tier}`;
+    const cleanDispatch = {
+      id: dispatchData.id || `dsp-${Date.now()}`,
+      issueId: dispatchData.issueId,
+      departmentId: dispatchData.departmentId || null,
+      tier: dispatchData.tier ?? 1,
+      toInbox: dispatchData.toInbox || '',
+      gmailMessageId: dispatchData.gmailMessageId || `pending-${idempotencyKey}`,
+      body: dispatchData.body || '',
+      status: dispatchData.status || 'PENDING',
+      idempotencyKey,
+      createdAt: new Date().toISOString()
+    };
+
+    if (!useLocalFallback && firestoreDb) {
+      try {
+        // Idempotency guard: one dispatch per issueId_tier.
+        const existingSnap = await firestoreDb
+          .collection('dispatches')
+          .where('idempotencyKey', '==', idempotencyKey)
+          .limit(1)
+          .get();
+        if (!existingSnap.empty) {
+          const d = existingSnap.docs[0];
+          console.log(`Dispatch for ${idempotencyKey} already exists (${d.id}); skipping duplicate.`);
+          return { id: d.id, ...d.data() };
+        }
+
+        const ref = await firestoreDb.collection('dispatches').add(cleanDispatch);
+        console.log(`Created dispatch ${ref.id} for issue ${cleanDispatch.issueId} (tier ${cleanDispatch.tier}) in Firestore`);
+        return { id: ref.id, ...cleanDispatch };
+      } catch (error) {
+        console.error('Firestore createDispatch failed, writing to local JSON backup:', error);
+      }
+    }
+
+    // Fallback mode
+    const local = readLocalDb();
+    local.dispatches = local.dispatches || [];
+    const existing = local.dispatches.find((d: any) => d.idempotencyKey === idempotencyKey);
+    if (existing) {
+      console.log(`Dispatch for ${idempotencyKey} already exists locally; skipping duplicate.`);
+      return existing;
+    }
+    local.dispatches.push(cleanDispatch);
+    writeLocalDb(local);
+    console.log(`Created dispatch ${cleanDispatch.id} for issue ${cleanDispatch.issueId} (tier ${cleanDispatch.tier}) in local JSON database`);
+    return cleanDispatch;
   }
 };

@@ -1,28 +1,9 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import { dbService } from "./db";
 import { encodeGeohash, resolveWardAndZone } from "../lib/geohash";
-
-// Initialize Gemini SDK safely
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-
-let aiClient: GoogleGenAI | null = null;
-
-export function getGeminiClient(): GoogleGenAI {
-  if (!aiClient) {
-    if (!GEMINI_API_KEY) {
-      console.warn("WARNING: GEMINI_API_KEY environment variable is not defined!");
-    }
-    aiClient = new GoogleGenAI({
-      apiKey: GEMINI_API_KEY || "MOCK_KEY",
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
-  }
-  return aiClient;
-}
+import { getGeminiClient, retryWithBackoff, hasGeminiKey, GEMINI_MODEL } from "./gemini";
+import { routeIssue, type IssueCategory } from "./routing";
+import { dispatchComplaint } from "./dispatch";
 
 interface TriageResult {
   category: "Roads/Potholes" | "Streetlights" | "Water" | "Garbage/Waste" | "Drainage/Sewage" | "Other";
@@ -32,43 +13,44 @@ interface TriageResult {
 }
 
 /**
- * Executes a function with exponential backoff retries.
- */
-async function retryWithBackoff<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
-  try {
-    return await fn();
-  } catch (error) {
-    if (retries <= 0) throw error;
-    console.warn(`External request failed, retrying in ${delay}ms... Remaining retries: ${retries}. Error:`, error);
-    await new Promise(resolve => setTimeout(resolve, delay));
-    return retryWithBackoff(fn, retries - 1, delay * 2);
-  }
-}
-
-/**
  * Uses Gemini to classify a citizen's report
  */
 export async function classifyMedia(description: string, mediaUrl?: string, reasked = false): Promise<TriageResult> {
-  const prompt = `You are a professional citizen complaints analyst. Analyze the civic report details below:
+  const prompt = `You are Setu, a professional municipal-complaints triage analyst for the Rajkot Municipal Corporation (RMC). Classify the citizen report into EXACTLY ONE category using these definitions. A clear civic problem must be placed in its specific category — do NOT default to "Other".
+
+CATEGORY DEFINITIONS (with examples):
+- Roads/Potholes: damaged road/footpath surface — potholes, cracks, craters, sinkholes, broken or uneven roads, collapsed pavement, missing manhole covers on roads.
+  Example: "huge crater on the road near the metro pillar swallowing bike tyres" -> Roads/Potholes.
+- Streetlights: street-lighting faults — dark/non-working lamps, flickering lights, broken or leaning light poles, exposed wiring on a lighting pole.
+  Example: "the street lamps along the canal walkway are completely dead at night" -> Streetlights.
+- Water: drinking/supply water — pipeline leak or burst, no water supply, very low pressure, contaminated/dirty tap water.
+  Example: "a water pipeline has burst and is flooding the crossroads" -> Water.
+- Garbage/Waste: solid waste — overflowing bins, uncollected trash piles, garbage dumped on streets/footpaths, dead animals, debris.
+  Example: "garbage dump overflowing onto the footpath behind the temple" -> Garbage/Waste.
+- Drainage/Sewage: drainage/sewerage — blocked or overflowing drains, raw sewage backflow, gutter/manhole overflow, waterlogging caused by blocked drains.
+  Example: "raw sewage is backing up from the storm drain near the gymkhana" -> Drainage/Sewage.
+- Other: ONLY when the report is genuinely ambiguous, or clearly not one of the five municipal categories above (e.g. spam, ads, off-topic). Never use Other as a lazy fallback for a clear civic defect.
+
+REPORT TO CLASSIFY:
 Report Text: "${description}"
 Report Media Context/URL: "${mediaUrl || 'No image attached'}"
 
-Extract exactly:
-1. Category - Choose exactly one from: Roads/Potholes, Streetlights, Water, Garbage/Waste, Drainage/Sewage, Other
-2. Severity - Choose LOW, MED, or HIGH
-3. Confidence - Numerical rating (0.0 to 1.0) of whether this represents a real, valid citizen/municipal complaint (e.g. low for spam, ads, off-topic chats, high for clear pipeline bursts, active road defects, etc.)
-4. Title - A brief, professional, human-friendly 4-10 word title summarizing the complaint.
+Return strict JSON with exactly:
+1. category - one of: Roads/Potholes, Streetlights, Water, Garbage/Waste, Drainage/Sewage, Other.
+2. severity - LOW, MED, or HIGH. HIGH = active danger to people/vehicles or a major service outage; MED = clear problem, no immediate danger; LOW = minor/cosmetic.
+3. confidence - 0.0 to 1.0 that this is a real, valid municipal complaint (low for spam/ads/off-topic, high for a clear civic defect).
+4. title - a SPECIFIC, descriptive 4-10 word title naming the exact problem and any stated landmark (e.g. "Deep pothole cluster near Metro Pillar 142"). NEVER output generic placeholders like "Newly reported civic hazard", "Civic issue", "New complaint", or "Untitled".
 
-Provide a valid strict JSON output matching the requested schema.`;
+Output valid strict JSON matching the requested schema.`;
 
   try {
     const ai = getGeminiClient();
-    if (!GEMINI_API_KEY) {
+    if (!hasGeminiKey()) {
       throw new Error("GEMINI_API_KEY missing");
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: GEMINI_MODEL,
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -238,14 +220,30 @@ export async function processTriagePipeline(report: {
     agentStatus = "Setu: Rejected. Non-municipal domain topic.";
   }
 
+  // 4b. Routing (Doc 4 §13) — only validated issues are routed to a department,
+  // given the real 4-tier escalation ladder, and assigned an SLA deadline.
+  let routing: ReturnType<typeof routeIssue> | null = null;
+  if (outcome === "VALIDATED") {
+    routing = routeIssue(
+      classification.category as IssueCategory,
+      locationDetails.zone,
+      classification.severity,
+      new Date(startTs)
+    );
+    console.log(`Routed -> department ${routing.departmentId} (${routing.departmentName}), SLA ${routing.slaHours}h, due ${routing.slaDueAt}`);
+  }
+
   // Generate unique dossier ID tracking path
   const dossierId = `Dossier #${Math.floor(1000 + Math.random() * 9000)}-${classification.category.substring(0, 1).toUpperCase()}`;
 
-  const telemetryLines = [
+  const telemetryLines: Array<{ ts: string; glyph: string; kind: string; text: string }> = [
     { ts: new Date(Date.now() - 3000).toISOString(), glyph: '›', kind: 'reasoning', text: `classifying media……………… ${classification.category} · ${classification.severity}` },
     { ts: new Date(Date.now() - 1500).toISOString(), glyph: '›', kind: 'tool', text: `locating………………………… Ward ${locationDetails.ward}, ${locationDetails.zone} Zone` },
     { ts: new Date().toISOString(), glyph: '✓', kind: 'action', text: `triage decision………………… ${outcome} (confidence: ${classification.confidence.toFixed(2)})` }
   ];
+  if (routing) {
+    telemetryLines.push({ ts: new Date().toISOString(), glyph: '›', kind: 'tool', text: `routing…………………………… ${routing.departmentName}` });
+  }
 
   const newIssue = {
     id: `iss-${Date.now()}`,
@@ -264,6 +262,16 @@ export async function processTriagePipeline(report: {
     geohash,
     ward: `Ward ${locationDetails.ward}`,
     zone: locationDetails.zone,
+    // Routing + escalation ladder (present only for VALIDATED issues)
+    ...(routing ? {
+      departmentId: routing.departmentId,
+      departmentName: routing.departmentName,
+      demoInbox: routing.demoInbox,
+      escalationLadder: routing.escalationLadder,
+      escalationTier: routing.escalationTier, // 0 = validated, awaiting first dispatch
+      slaHours: routing.slaHours,
+      slaDueAt: routing.slaDueAt,
+    } : {}),
     isPublic,
     confirmedCount: 1,
     agentStatus,
@@ -290,6 +298,21 @@ export async function processTriagePipeline(report: {
     });
   }
 
+  // 6. Complaint draft + dispatch foundation (Doc 4 §6.4) — validated issues only.
+  // Drafts the RMC complaint, writes a dispatch record, and transitions to ESCALATED.
+  // Non-fatal: a dispatch failure leaves the issue validated and on the feed.
+  let finalIssue = created;
+  if (outcome === "VALIDATED") {
+    try {
+      console.log("Step 6: Drafting complaint + writing dispatch record (tier 1 / HOD)...");
+      const dispatchResult = await dispatchComplaint(created);
+      finalIssue = dispatchResult.issue;
+      console.log(`Dispatch recorded [${dispatchResult.dispatch.status}] for ${created.id} -> tier ${dispatchResult.dispatch.tier} (${dispatchResult.dispatch.toInbox})`);
+    } catch (dispatchErr) {
+      console.error("Dispatch foundation failed (non-fatal, issue stays VALIDATED):", dispatchErr);
+    }
+  }
+
   console.log(`--- TRIAGE COMPLETED. Outcome: ${outcome}, ID: ${created.id} ---\n`);
-  return { outcome, issue: created };
+  return { outcome, issue: finalIssue };
 }
