@@ -9,3 +9,5 @@ coverage/
 serviceAccountKey.json
 CLAUDE.md
 doc/
+scripts/
+db.json
