@@ -1,0 +1,31 @@
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #16181D;
+  --color-ink-soft: #4A505B;
+  --color-paper: #F4F6F5;
+  --color-surface: #FFFFFF;
+  --color-hairline: #E2E6E3;
+  --color-civic: #0E6F6B;
+  --color-civic-deep: #0A4F4C;
+  --color-civic-tint: #ECF4F3;
+  --color-signal: #EA9010;
+
+  --color-st-new: #8A9099;
+  --color-st-open: #0E6F6B;
+  --color-st-escalate: #EA9010;
+  --color-st-stalled: #D2483F;
+  --color-st-progress: #2D6FD6;
+  --color-st-resolved: #2E9E5B;
+
+  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}

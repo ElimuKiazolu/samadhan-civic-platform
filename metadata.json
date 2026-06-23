@@ -1,0 +1,6 @@
+{
+  "name": "Samadhan",
+  "description": "Hyperlocal problem solver and civic resolution platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
