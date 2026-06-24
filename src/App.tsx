@@ -176,21 +176,23 @@ export default function App() {
   const [reportedIds, setReportedIds] = useState<string[]>([]);
   const [selectedWard, setSelectedWard] = useState<string>('All Wards');
 
+  // Re-fetch the live issue feed from the Express API. Reused on mount and after
+  // the authority "Run SLA Sweep" so the feed visibly reflects sentinel escalations.
+  const refreshIssues = async () => {
+    try {
+      const res = await fetch('/api/issues');
+      if (!res.ok) throw new Error('Bad response');
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        setIssues(data);
+      }
+    } catch (err) {
+      console.log('Issue refresh failed; keeping current data safely', err);
+    }
+  };
+
   useEffect(() => {
-    // Dynamic fetch from Express API
-    fetch('/api/issues')
-      .then((res) => {
-        if (!res.ok) throw new Error();
-        return res.json();
-      })
-      .then((data) => {
-        if (Array.isArray(data) && data.length > 0) {
-          setIssues(data);
-        }
-      })
-      .catch((err) => {
-        console.log('Using initial client fallback data safely', err);
-      });
+    refreshIssues();
   }, []);
 
   // Update selected issue reference when active issue is mutated globally
@@ -431,6 +433,7 @@ export default function App() {
             <AuthorityDashboard
               issues={issues}
               onUpdateStatus={handleUpdateStatus}
+              onRefresh={refreshIssues}
             />
           )}
 

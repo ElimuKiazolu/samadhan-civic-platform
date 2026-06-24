@@ -2,6 +2,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import fs from 'fs';
 import path from 'path';
+import { buildEscalationLadder } from './routing';
 
 let firestoreDb: any = null;
 let useLocalFallback = false;
@@ -63,6 +64,13 @@ const defaultMockIssues = [
     ward: 'Ward 12',
     age: '3h ago',
     confirmedCount: 42,
+    departmentId: 'bandhkam',
+    departmentName: 'Bandhkam (Roads & Buildings / Public Works)',
+    zone: 'Central',
+    escalationTier: 1,                 // already dispatched to HOD → next rung is DMC (tier 2)
+    slaHours: 48,
+    slaDueAt: new Date(Date.now() - 3600000).toISOString(), // 1h in the PAST → breached
+    escalationLadder: buildEscalationLadder('bandhkam', 'Bandhkam (Roads & Buildings / Public Works)', 'Central'),
     agentStatus: 'Setu: Dispatched to RMC Roads. No response in 48h → re-escalated.',
     mediaUrl: 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?auto=format&fit=crop&w=800&q=80',
     mediaType: 'photo',
@@ -308,6 +316,28 @@ export const dbService = {
     const publicIssues = local.issues.filter((i: any) => i.isPublic === true);
     publicIssues.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return publicIssues.map(item => normalizeIssue(item));
+  },
+
+  /**
+   * Returns ALL issues (public + private) in raw stored shape — no isPublic filter,
+   * no client normalization. Used by the SLA sentinel which must see escalation
+   * fields (slaDueAt, escalationTier, escalationLadder) verbatim. Firestore→JSON
+   * fallback like every other method.
+   */
+  async getAllIssues(): Promise<any[]> {
+    if (!useLocalFallback && firestoreDb) {
+      try {
+        const snapshot = await firestoreDb.collection('issues').get();
+        const list: any[] = [];
+        snapshot.forEach((doc: any) => list.push({ id: doc.id, ...doc.data() }));
+        return list;
+      } catch (error) {
+        console.error('Firestore getAllIssues failed, switching permanently to local JSON fallback:', error);
+        useLocalFallback = true;
+      }
+    }
+    const local = readLocalDb();
+    return Array.isArray(local.issues) ? local.issues : [];
   },
 
   async getIssueById(issueId: string): Promise<any | null> {

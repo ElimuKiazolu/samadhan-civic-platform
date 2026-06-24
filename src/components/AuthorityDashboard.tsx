@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { CivicIssue } from '../types';
-import { ShieldAlert, CheckCircle2, Clock, MapPin, Loader2, UploadCloud, Check } from 'lucide-react';
+import { ShieldAlert, CheckCircle2, Clock, MapPin, Loader2, UploadCloud, Check, Siren, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getStatusColors } from './IssueCard';
 
 interface AuthorityDashboardProps {
   issues: CivicIssue[];
   onUpdateStatus: (id: string, nextStatus: CivicIssue['status'], proofUrl?: string) => void;
+  onRefresh?: () => Promise<void> | void;
 }
 
 const MOCK_PROOF_IMAGES = [
@@ -16,11 +17,47 @@ const MOCK_PROOF_IMAGES = [
   'https://images.unsplash.com/photo-1616401784845-180882ba9ba8?auto=format&fit=crop&w=400&q=80'  // emptied waste bins inside enclosure
 ];
 
-export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, onUpdateStatus }) => {
+export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, onUpdateStatus, onRefresh }) => {
   const [filter, setFilter] = useState<'ALL' | 'VALIDATED' | 'IN_PROGRESS' | 'SLA_BREACH'>('ALL');
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
   const [proofMediaIndex, setProofMediaIndex] = useState<number | null>(null);
   const [isResolving, setIsResolving] = useState(false);
+
+  // Autonomous SLA sweep (Setu sentinel) trigger state.
+  const [sweepState, setSweepState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [sweepMsg, setSweepMsg] = useState<string>('');
+
+  const handleRunSweep = async () => {
+    if (sweepState === 'running') return;
+    setSweepState('running');
+    setSweepMsg('Setu scanning SLA windows…');
+    try {
+      const res = await fetch('/api/sentinel', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data || data.ok === false) throw new Error('Sweep rejected');
+
+      const escalated = Array.isArray(data.escalated) ? data.escalated.length : 0;
+      const maxed = Array.isArray(data.maxedOut) ? data.maxedOut.length : 0;
+      const scanned = typeof data.scanned === 'number' ? data.scanned : 0;
+
+      if (escalated > 0) {
+        setSweepMsg(`↑ ${escalated} case${escalated === 1 ? '' : 's'} re-escalated to next tier · ${scanned} scanned`);
+      } else if (maxed > 0) {
+        setSweepMsg(`⚠ ${maxed} case${maxed === 1 ? '' : 's'} at top tier · ${scanned} scanned, none escalated`);
+      } else {
+        setSweepMsg(`✓ No SLA breaches · ${scanned} case${scanned === 1 ? '' : 's'} scanned`);
+      }
+      setSweepState('done');
+
+      // Pull the refreshed feed so escalations are visible immediately.
+      if (onRefresh) await onRefresh();
+    } catch (err) {
+      console.error('SLA sweep failed:', err);
+      setSweepMsg('Sweep failed — check engine and retry.');
+      setSweepState('error');
+    }
+  };
 
   const issuesList = issues || [];
 
@@ -98,6 +135,49 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
           >
             SLA Breach ({issuesList.filter(i => i?.status === 'STALLED').length})
           </button>
+        </div>
+
+        {/* Autonomous SLA sweep trigger — runs Setu's sentinel on demand */}
+        <div className="space-y-2">
+          <button
+            onClick={handleRunSweep}
+            disabled={sweepState === 'running'}
+            className={`w-full py-2.5 rounded-[6px] font-mono font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-1.5 border transition-all active:scale-[0.99] ${
+              sweepState === 'error'
+                ? 'bg-st-stalled/10 text-st-stalled border-st-stalled/40 hover:bg-st-stalled/20'
+                : 'bg-ink text-white border-zinc-900 hover:bg-zinc-800 disabled:bg-zinc-300 disabled:text-zinc-500 disabled:border-zinc-300'
+            }`}
+          >
+            {sweepState === 'running' ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Sweeping SLAs…
+              </>
+            ) : sweepState === 'error' ? (
+              <>
+                <AlertTriangle className="w-3.5 h-3.5" /> Retry SLA Sweep
+              </>
+            ) : (
+              <>
+                <Siren className="w-3.5 h-3.5" /> Run SLA Sweep
+              </>
+            )}
+          </button>
+
+          {sweepMsg && sweepState !== 'idle' && (
+            <div
+              className={`flex items-center gap-1.5 text-[10px] font-mono font-bold px-2.5 py-1.5 rounded-[6px] border ${
+                sweepState === 'error'
+                  ? 'bg-st-stalled/5 text-st-stalled border-st-stalled/20'
+                  : sweepState === 'running'
+                  ? 'bg-zinc-50 text-ink-soft border-hairline'
+                  : 'bg-civic/5 text-civic-deep border-civic/20'
+              }`}
+            >
+              {sweepState === 'done' && <ArrowUpCircle className="w-3 h-3 shrink-0" />}
+              {sweepState === 'error' && <AlertTriangle className="w-3 h-3 shrink-0" />}
+              <span className="truncate">{sweepMsg}</span>
+            </div>
+          )}
         </div>
       </div>
 
