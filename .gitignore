@@ -7,4 +7,9 @@ coverage/
 .env*
 !.env.example
 .env.example
+CLAUDE.md
+doc/
+scripts/
+serviceAccountKey.json
+db.json
 

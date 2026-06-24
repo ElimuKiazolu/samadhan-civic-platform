@@ -8,12 +8,22 @@ import { tierTarget } from "./routing";
  * and never fabricates an RMC response (Doc 4 §6.4, §9 agent constraints).
  * Wrapped in the standard retry ladder with a safe templated fallback (Doc 6).
  */
-export async function draftComplaint(issue: any, targetTitle?: string): Promise<string> {
+export async function draftComplaint(
+  issue: any,
+  targetTitle?: string,
+  opts?: { firmer?: boolean; previousTier?: number }
+): Promise<string> {
   const recipient = targetTitle || issue.departmentName || "the concerned RMC department";
+  const firmer = !!opts?.firmer;
+  const prevTier = opts?.previousTier ?? (issue.escalationTier || 0);
+
+  const escalationClause = firmer
+    ? `\n\nESCALATION CONTEXT: A prior complaint for this dossier was filed at Tier ${prevTier} and the SLA window lapsed WITHOUT acknowledgement or resolution. This is a FORMAL ESCALATION to a higher authority. Tone must be firmer and reference the unanswered prior complaint and the statutory duty to respond under the Gujarat Right of Citizens to Public Services Act, 2013. Still civil, still fact-only — do NOT fabricate any prior RMC response.`
+    : "";
 
   const prompt = `You are Setu, an autonomous civic-grievance officer filing a FORMAL complaint with the Rajkot Municipal Corporation (RMC) on behalf of citizens (who must remain anonymous).
 
-Write a formal complaint addressed to: ${recipient}.
+Write a formal complaint addressed to: ${recipient}.${escalationClause}
 
 Case data:
 - Dossier ID: ${issue.dossierId || issue.id}
@@ -35,8 +45,10 @@ Output ONLY the complaint body text (no subject line, no markdown).`;
 
   const fallback =
     `To ${recipient},\n\n` +
-    `This is a formal civic complaint (Dossier ${issue.dossierId || issue.id}) regarding a ${issue.severity} severity ` +
-    `${issue.category} issue reported in ${issue.ward || "an RMC ward"}, ${issue.zone || "Central"} Zone. ` +
+    (firmer
+      ? `This is a FORMAL ESCALATION (Dossier ${issue.dossierId || issue.id}). A prior complaint at Tier ${prevTier} lapsed past its SLA window without acknowledgement. `
+      : `This is a formal civic complaint (Dossier ${issue.dossierId || issue.id}) `) +
+    `regarding a ${issue.severity} severity ${issue.category} issue reported in ${issue.ward || "an RMC ward"}, ${issue.zone || "Central"} Zone. ` +
     `Reported concern: "${issue.description}". Evidence on file: ${issue.mediaUrl || "photo attached"}. ` +
     `This matter falls under the department's civic responsibility; we request prompt inspection and resolution within the applicable SLA window. ` +
     `Citizen identity withheld. — Setu, on behalf of Samadhan citizens.`;
@@ -127,4 +139,46 @@ export async function dispatchComplaint(
     dispatch,
     issue: { ...issue, status: "ESCALATED", escalationTier: tier, agentStatus },
   };
+}
+
+/**
+ * escalateCase — the SLA sentinel's per-issue action (Doc 4 §6.5).
+ * Climbs one rung of the real 4-tier ladder: re-drafts a FIRMER complaint,
+ * writes a new dispatch record at tier+1 (reusing dispatchComplaint's idempotent
+ * foundation), bumps escalationTier, sets a NEW slaDueAt, appends an "↑ re-escalated"
+ * Case Log line, and updates agentStatus. Caller (sentinel) must ensure tier < 4.
+ */
+export async function escalateCase(
+  issue: any,
+  now: Date = new Date()
+): Promise<{ dispatch: any; issue: any; tier: number; targetTitle: string }> {
+  const currentTier = issue.escalationTier || 0;
+  const nextTier = currentTier + 1;
+  const ladder = issue.escalationLadder || [];
+  const target = tierTarget(ladder, nextTier);
+  const targetTitle = target?.title || issue.departmentName || "RMC department";
+
+  // 1. Firmer follow-up draft (own retry + templated fallback inside draftComplaint).
+  const body = await draftComplaint(issue, target?.title, { firmer: true, previousTier: currentTier });
+
+  // 2. Reuse the dispatch foundation: idempotent dispatch record at nextTier,
+  //    "✦ dispatched" log, status→ESCALATED, escalationTier→nextTier, status history.
+  const dispatchResult = await dispatchComplaint(issue, { tier: nextTier, body });
+
+  // 3. New SLA deadline from now, using the issue's SLA window.
+  const slaHours = issue.slaHours || 48;
+  const slaDueAt = new Date(now.getTime() + slaHours * 3_600_000).toISOString();
+
+  // 4. Distinct re-escalation trace + new deadline + agent status (overrides the
+  //    "awaiting acknowledgement" line dispatchComplaint just set).
+  const agentStatus = `Setu: No response from Tier ${currentTier}. Re-escalated to ${targetTitle} (Tier ${nextTier}). New SLA ${slaHours}h.`;
+  await dbService.updateIssue(issue.id, { status: "ESCALATED", escalationTier: nextTier, slaDueAt, agentStatus });
+  await dbService.addCaseLog(issue.id, {
+    glyph: "↑",
+    kind: "escalation",
+    tier: nextTier,
+    text: `re-escalated → ${targetTitle} (SLA breach, Tier ${currentTier} → ${nextTier})`,
+  });
+
+  return { dispatch: dispatchResult.dispatch, issue: { ...dispatchResult.issue, slaDueAt, agentStatus }, tier: nextTier, targetTitle };
 }

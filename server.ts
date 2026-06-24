@@ -4,6 +4,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dbService } from './src/services/db';
 import { processTriagePipeline } from './src/services/triage';
+import { runSentinel } from './src/services/sentinel';
+import { seedDemoBreachedIssue } from './src/services/seed';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -88,6 +90,39 @@ app.post('/api/report', async (req, res) => {
   }
 });
 
+// Demo seeder (Doc 4 §6.5 demo support). Plants ONE breached Roads/Potholes case
+// into the ACTIVE store (Firestore OR local) so the sentinel escalation can be shown
+// live on the deployed app. Idempotent on a fixed id — re-arms an existing case.
+app.post('/api/seed-demo', async (req, res) => {
+  try {
+    const { created, issue } = await seedDemoBreachedIssue();
+    res.status(created ? 201 : 200).json({
+      ok: true,
+      created,
+      id: issue?.id,
+      status: issue?.status,
+      escalationTier: issue?.escalationTier,
+      slaDueAt: issue?.slaDueAt,
+      message: created ? 'Demo breached case planted.' : 'Demo case re-armed to breached state.',
+    });
+  } catch (error: any) {
+    console.error('Seed demo failed in POST /api/seed-demo:', error);
+    res.status(500).json({ ok: false, error: 'Failed to seed demo issue' });
+  }
+});
+
+// Autonomous SLA sentinel (Doc 4 §6.5). Manual trigger for the demo + the target
+// Cloud Scheduler/interval hits. Returns the sweep result so the UI can show it.
+app.post('/api/sentinel', async (req, res) => {
+  try {
+    const result = await runSentinel();
+    res.json({ ok: true, ...result });
+  } catch (error: any) {
+    console.error('Sentinel run failed in POST /api/sentinel:', error);
+    res.status(500).json({ ok: false, error: 'Sentinel sweep failed' });
+  }
+});
+
 // Vite middleware setup for full-stack SPA serving
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
@@ -108,6 +143,14 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Samadhan Civic Server running on http://0.0.0.0:${PORT}`);
   });
+
+  const sentinelMs = Number(process.env.SENTINEL_INTERVAL_MS || 0);
+  if (sentinelMs > 0) {
+    console.log(`Sentinel auto-loop enabled: every ${sentinelMs}ms`);
+    setInterval(() => {
+      runSentinel().catch(err => console.error('Sentinel interval tick failed:', err));
+    }, sentinelMs);
+  }
 }
 
 startServer();
