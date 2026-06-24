@@ -41,15 +41,40 @@ app.get('/api/issues/:id', async (req, res) => {
 
 app.post('/api/report', async (req, res) => {
   try {
-    const { description, mediaUrl, lat, lng, reporterId } = req.body;
+    let description = req.body.description || req.body.title || '';
+    let mediaUrl = req.body.mediaUrl || '';
+    let lat = Number(req.body.lat);
+    let lng = Number(req.body.lng);
+    const reporterId = req.body.reporterId || 'citizen-demo';
+
+    // Map ward string to stable latitude/longitude fallback for location lookup
+    if (isNaN(lat) || isNaN(lng)) {
+      const wardStr = String(req.body.ward || '').trim();
+      if (wardStr.includes('12')) {
+        lat = 22.305;
+        lng = 70.806;
+      } else if (wardStr.includes('8')) {
+        lat = 22.303;
+        lng = 70.804;
+      } else if (wardStr.includes('10')) {
+        lat = 22.304;
+        lng = 70.805;
+      } else if (wardStr.includes('7')) {
+        lat = 22.303;
+        lng = 70.803;
+      } else {
+        lat = 22.3;
+        lng = 70.8;
+      }
+    }
     
     // Process live triage pipeline (Gemini, geohash, duplicate merge, decision gate)
     const result = await processTriagePipeline({
-      description: description || '',
-      mediaUrl: mediaUrl || '',
-      lat: Number(lat) || 22.3, // default Rajkot coordinates
-      lng: Number(lng) || 70.8,
-      reporterId: reporterId || 'citizen-demo'
+      description,
+      mediaUrl,
+      lat,
+      lng,
+      reporterId
     });
     
     // Outcome: VALIDATED, NEEDS_INFO, REJECTED, DUPLICATE

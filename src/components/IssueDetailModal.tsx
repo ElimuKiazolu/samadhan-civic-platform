@@ -33,8 +33,9 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   }, [issue.id]);
 
   useEffect(() => {
+    const caseLogLength = (issue.caseLog || []).length;
     if (isStreaming && isCaseLogOpen) {
-      if (visibleLinesCount < issue.caseLog.length) {
+      if (visibleLinesCount < caseLogLength) {
         const timer = setTimeout(() => {
           setVisibleLinesCount((prev) => prev + 1);
         }, 450); // stream every 450ms for a satisfying visual reveal
@@ -43,7 +44,7 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
         setIsStreaming(false);
       }
     }
-  }, [visibleLinesCount, isStreaming, isCaseLogOpen, issue.caseLog.length]);
+  }, [visibleLinesCount, isStreaming, isCaseLogOpen, issue.caseLog]);
 
   const handleCorroborateClick = () => {
     if (!corroborated) {
@@ -129,7 +130,7 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
             {/* Tag Overlay */}
             <div className="absolute bottom-3 left-4 right-4 flex justify-between items-center">
               <span className="bg-ink text-white text-[10px] font-bold px-2 py-0.5 uppercase tracking-wider rounded-[3px]">
-                {issue.category.toUpperCase()}
+                {(issue.category || "").toUpperCase()}
               </span>
               <span className={`px-2 py-0.5 rounded-[3px] text-[10px] font-bold uppercase tracking-wider text-white ${issue.severity === 'HIGH' ? 'bg-st-stalled' : 'bg-st-escalate'}`}>
                 SEVERITY {issue.severity}
@@ -165,8 +166,8 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
               Case Timeline
             </h3>
             <div className="relative pl-4 border-l-2 border-hairline space-y-4 pt-1">
-              {issue.timeline.map((event, idx) => {
-                const isLatest = idx === issue.timeline.length - 1;
+              {(issue.timeline || []).map((event, idx) => {
+                const isLatest = idx === (issue.timeline || []).length - 1;
                 const statusColorInfo = getStatusColors(event.status);
                 return (
                   <div key={idx} className="relative">
@@ -214,7 +215,7 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                   className="overflow-hidden font-mono text-[11px] leading-relaxed p-4 bg-zinc-950 text-zinc-200 border-l-[3px] border-civic"
                 >
                   <div className="space-y-2">
-                    {issue.caseLog.slice(0, visibleLinesCount).map((log, index) => {
+                    {(issue.caseLog || []).slice(0, visibleLinesCount).map((log, index) => {
                       const isComplete = log.isDone;
                       return (
                         <motion.div
@@ -271,15 +272,15 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
           {/* Comments Section */}
           <div className="space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-widest font-mono text-ink-soft border-b border-hairline pb-2">
-              Citizen-Agent Record Thread ({issue.comments.length})
+              Citizen-Agent Record Thread ({(issue.comments || []).length})
             </h3>
 
             {/* List and Custom Replies */}
             <div className="space-y-3">
-              {issue.comments.length === 0 ? (
+              {(issue.comments || []).length === 0 ? (
                 <p className="text-zinc-400 italic text-xs py-2 text-center">No commentary on dossier yet. Enter response below to trigger Setu.</p>
               ) : (
-                issue.comments.map((comment) => (
+                (issue.comments || []).map((comment) => (
                   <div
                     key={comment.id}
                     className={`p-3 rounded-[8px] flex flex-col gap-1 transition-all ${

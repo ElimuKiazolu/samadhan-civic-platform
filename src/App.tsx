@@ -266,8 +266,8 @@ export default function App() {
     setIssues((prev) =>
       prev.map((issue) => {
         if (issue.id === issueId) {
-          const updatedTimeline = [...issue.timeline];
-          const updatedCaseLog = [...issue.caseLog];
+          const updatedTimeline = [...(issue.timeline || [])];
+          const updatedCaseLog = [...(issue.caseLog || [])];
           const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
           // Determine status modifications

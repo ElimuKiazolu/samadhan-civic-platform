@@ -9,28 +9,44 @@ let useLocalFallback = false;
 const DB_FILE = path.join(process.cwd(), 'db.json');
 
 // Initialize Firebase Admin or Fallback
-try {
-  const serviceKeyPath = path.join(process.cwd(), 'serviceAccountKey.json');
-  if (fs.existsSync(serviceKeyPath)) {
-    const serviceAccount = JSON.parse(fs.readFileSync(serviceKeyPath, 'utf8'));
+let firebaseInitialized = false;
+
+// 1. Try environment variable
+if (!firebaseInitialized && process.env.FIREBASE_SERVICE_ACCOUNT) {
+  try {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     initializeApp({
       credential: cert(serviceAccount)
     });
     firestoreDb = getFirestore();
-    console.log('Successfully initialized firebase-admin using serviceAccountKey.json');
-  } else {
-    // Attempt standard Application Default Credentials
-    try {
-      initializeApp();
-      firestoreDb = getFirestore();
-      console.log('Initialized firebase-admin using default credentials');
-    } catch (e) {
-      console.log('Firebase Application Default Credentials not found/invalid. Enabling JSON fallback db.');
-      useLocalFallback = true;
-    }
+    console.log('Firebase init: env var');
+    firebaseInitialized = true;
+  } catch (error) {
+    console.error('Failed to init Firebase via env var:', error);
   }
-} catch (error) {
-  console.error('Failed to initialize Firebase Admin, using local JSON fallback:', error);
+}
+
+// 2. Try serviceAccountKey.json file
+if (!firebaseInitialized) {
+  try {
+    const serviceKeyPath = path.join(process.cwd(), 'serviceAccountKey.json');
+    if (fs.existsSync(serviceKeyPath)) {
+      const serviceAccount = JSON.parse(fs.readFileSync(serviceKeyPath, 'utf8'));
+      initializeApp({
+        credential: cert(serviceAccount)
+      });
+      firestoreDb = getFirestore();
+      console.log('Firebase init: file');
+      firebaseInitialized = true;
+    }
+  } catch (error) {
+    console.error('Failed to init Firebase via file:', error);
+  }
+}
+
+// 3. Fallback to local JSON fallback
+if (!firebaseInitialized) {
+  console.log('Firebase init: local JSON fallback');
   useLocalFallback = true;
 }
 
@@ -230,6 +246,44 @@ function writeLocalDb(data: any) {
   }
 }
 
+// Normalizes database issue states to ensure robust array structures and properties for client-side consumption
+function normalizeIssue(issue: any): any {
+  if (!issue) return null;
+  const normalized = {
+    comments: [],
+    caseLog: [],
+    timeline: [],
+    ...issue
+  };
+  
+  // Guard arrays to prevent type errors on map
+  normalized.comments = Array.isArray(normalized.comments) ? normalized.comments : [];
+  normalized.caseLog = Array.isArray(normalized.caseLog) ? normalized.caseLog : [];
+  normalized.timeline = Array.isArray(normalized.timeline) ? normalized.timeline : [];
+
+  // Normalize caseLog lines
+  normalized.caseLog = normalized.caseLog.map((log: any) => {
+    if (!log) return { time: '', glyph: '›', text: '', isDone: true, dim: false };
+    let time = log.time || '';
+    if (!time && log.ts) {
+      try {
+        time = new Date(log.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      } catch (e) {
+        time = '';
+      }
+    }
+    return {
+      time,
+      glyph: log.glyph || '›',
+      text: log.text || '',
+      isDone: log.isDone !== undefined ? log.isDone : true,
+      dim: log.dim || (log.kind === 'reasoning'),
+    };
+  });
+
+  return normalized;
+}
+
 // Complete Database abstraction layer supporting Firestore & robust Fallback
 export const dbService = {
   async getIssues(): Promise<any[]> {
@@ -242,9 +296,10 @@ export const dbService = {
         });
         // Sort newest first
         list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        return list;
+        return list.map(item => normalizeIssue(item));
       } catch (error) {
-        console.error('Firestore getIssues failed, falling back to local JSON:', error);
+        console.error('Firestore getIssues failed, switching permanently to local JSON fallback:', error);
+        useLocalFallback = true;
       }
     }
     
@@ -252,7 +307,7 @@ export const dbService = {
     const local = readLocalDb();
     const publicIssues = local.issues.filter((i: any) => i.isPublic === true);
     publicIssues.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return publicIssues;
+    return publicIssues.map(item => normalizeIssue(item));
   },
 
   async getIssueById(issueId: string): Promise<any | null> {
@@ -276,23 +331,24 @@ export const dbService = {
           const timeline: any[] = [];
           timelineSnap.forEach((d: any) => timeline.push({ id: d.id, ...d.data() }));
 
-          return {
+          return normalizeIssue({
             id: issueId,
             ...mainData,
             comments,
             caseLog,
             timeline
-          };
+          });
         }
       } catch (error) {
-        console.error(`Firestore getIssueById for ${issueId} failed, falling back to local JSON:`, error);
+        console.error(`Firestore getIssueById for ${issueId} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
       }
     }
 
     // Fallback mode
     const local = readLocalDb();
     const issue = local.issues.find((i: any) => i.id === issueId);
-    return issue || null;
+    return normalizeIssue(issue);
   },
 
   async createIssue(issueData: any): Promise<any> {
@@ -341,9 +397,10 @@ export const dbService = {
         }
 
         console.log(`Successfully created issue ${issueId} in Firestore`);
-        return cleanIssue;
+        return normalizeIssue(cleanIssue);
       } catch (error) {
-        console.error('Firestore createIssue failed, writing to local JSON backup:', error);
+        console.error('Firestore createIssue failed, switching permanently to local JSON fallback:', error);
+        useLocalFallback = true;
       }
     }
 
@@ -352,7 +409,7 @@ export const dbService = {
     local.issues.unshift(cleanIssue);
     writeLocalDb(local);
     console.log(`Successfully created issue ${issueId} in local JSON database`);
-    return cleanIssue;
+    return normalizeIssue(cleanIssue);
   },
 
   async updateIssue(issueId: string, updates: any): Promise<boolean> {
@@ -366,7 +423,8 @@ export const dbService = {
         console.log(`Successfully updated issue ${issueId} in Firestore`);
         return true;
       } catch (error) {
-        console.error(`Firestore updateIssue for ${issueId} failed:`, error);
+        console.error(`Firestore updateIssue for ${issueId} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
       }
     }
 
@@ -406,7 +464,8 @@ export const dbService = {
         });
         return cleanComment;
       } catch (error) {
-        console.error(`Firestore addComment to ${issueId} failed:`, error);
+        console.error(`Firestore addComment to ${issueId} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
       }
     }
 
@@ -438,7 +497,8 @@ export const dbService = {
         await docRef.collection('caseLog').add(cleanEntry);
         return cleanEntry;
       } catch (error) {
-        console.error(`Firestore addCaseLog to ${issueId} failed:`, error);
+        console.error(`Firestore addCaseLog to ${issueId} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
       }
     }
 
@@ -480,7 +540,8 @@ export const dbService = {
         });
         return cleanEntry;
       } catch (error) {
-        console.error(`Firestore addStatusHistory to ${issueId} failed:`, error);
+        console.error(`Firestore addStatusHistory to ${issueId} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
       }
     }
 
@@ -522,7 +583,8 @@ export const dbService = {
         });
         return closest;
       } catch (error) {
-        console.error('Firestore findDuplicates failed:', error);
+        console.error('Firestore findDuplicates failed, switching permanently to local JSON fallback:', error);
+        useLocalFallback = true;
       }
     }
 
@@ -581,7 +643,8 @@ export const dbService = {
         console.log(`Created dispatch ${ref.id} for issue ${cleanDispatch.issueId} (tier ${cleanDispatch.tier}) in Firestore`);
         return { id: ref.id, ...cleanDispatch };
       } catch (error) {
-        console.error('Firestore createDispatch failed, writing to local JSON backup:', error);
+        console.error('Firestore createDispatch failed, switching permanently to local JSON fallback:', error);
+        useLocalFallback = true;
       }
     }
 

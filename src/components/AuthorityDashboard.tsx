@@ -22,12 +22,16 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
   const [proofMediaIndex, setProofMediaIndex] = useState<number | null>(null);
   const [isResolving, setIsResolving] = useState(false);
 
+  const issuesList = issues || [];
+
   // Filter issues based on status
-  const filteredIssues = issues.filter((issue) => {
+  const filteredIssues = issuesList.filter((issue) => {
+    if (!issue) return false;
+    const status = issue.status || 'SUBMITTED';
     if (filter === 'ALL') return true;
-    if (filter === 'VALIDATED') return issue.status === 'VALIDATED' || issue.status === 'OPEN';
-    if (filter === 'IN_PROGRESS') return issue.status === 'IN_PROGRESS' || issue.status === 'ESCALATED';
-    if (filter === 'SLA_BREACH') return issue.status === 'STALLED';
+    if (filter === 'VALIDATED') return status === 'VALIDATED' || status === 'OPEN';
+    if (filter === 'IN_PROGRESS') return status === 'IN_PROGRESS' || status === 'ESCALATED';
+    if (filter === 'SLA_BREACH') return status === 'STALLED';
     return true;
   });
 
@@ -74,25 +78,25 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
             onClick={() => setFilter('ALL')}
             className={`flex-1 py-1.5 rounded-[4px] text-center uppercase tracking-tight border ${filter === 'ALL' ? 'bg-white text-ink border-hairline shadow-xs font-black' : 'text-zinc-500 border-transparent'}`}
           >
-            All ({issues.length})
+            All ({issuesList.length})
           </button>
           <button
             onClick={() => setFilter('VALIDATED')}
             className={`flex-1 py-1.5 rounded-[4px] text-center uppercase tracking-tight border ${filter === 'VALIDATED' ? 'bg-white text-ink border-transparent shadow-xs font-black' : 'text-zinc-500 border-transparent'}`}
           >
-            New ({issues.filter(i => i.status === 'VALIDATED' || i.status === 'OPEN').length})
+            New ({issuesList.filter(i => i?.status === 'VALIDATED' || i?.status === 'OPEN').length})
           </button>
           <button
             onClick={() => setFilter('IN_PROGRESS')}
             className={`flex-1 py-1.5 rounded-[4px] text-center uppercase tracking-tight border ${filter === 'IN_PROGRESS' ? 'bg-white text-ink border-transparent shadow-xs font-black' : 'text-zinc-500 border-transparent'}`}
           >
-            Active ({issues.filter(i => i.status === 'IN_PROGRESS' || i.status === 'ESCALATED').length})
+            Active ({issuesList.filter(i => i?.status === 'IN_PROGRESS' || i?.status === 'ESCALATED').length})
           </button>
           <button
             onClick={() => setFilter('SLA_BREACH')}
             className={`flex-1 py-1.5 rounded-[4px] text-center uppercase tracking-tight border ${filter === 'SLA_BREACH' ? 'bg-st-stalled/10 text-st-stalled border-st-stalled/30 font-black' : 'text-zinc-500 border-transparent'}`}
           >
-            SLA Breach ({issues.filter(i => i.status === 'STALLED').length})
+            SLA Breach ({issuesList.filter(i => i?.status === 'STALLED').length})
           </button>
         </div>
       </div>
@@ -107,60 +111,61 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
           </div>
         ) : (
           filteredIssues.map((issue) => {
-            const statusColor = getStatusColors(issue.status);
+            const statusStr = issue?.status || 'SUBMITTED';
+            const statusColor = getStatusColors(statusStr);
             
             // SLA parameters simulation
             let slaText = '⏱ 4d limit';
             let isBreaching = false;
-            if (issue.status === 'STALLED') {
+            if (statusStr === 'STALLED') {
               slaText = '⏱ BREACHED (Overdue)';
               isBreaching = true;
-            } else if (issue.status === 'ESCALATED' || issue.severity === 'HIGH') {
+            } else if (statusStr === 'ESCALATED' || issue?.severity === 'HIGH') {
               slaText = '⏱ 1d remaining';
               isBreaching = true;
-            } else if (issue.status === 'RESOLVED') {
+            } else if (statusStr === 'RESOLVED') {
               slaText = '✓ RESOLVED';
             }
 
             return (
               <div
-                key={issue.id}
+                key={issue?.id}
                 className="bg-white rounded-[12px] border border-hairline p-4 space-y-3 shadow-xs"
               >
                 {/* ID & category */}
                 <div className="flex justify-between items-center text-[10px] font-mono">
-                  <span className="text-zinc-400">{issue.dossierId}</span>
+                  <span className="text-zinc-400">{issue?.dossierId || ''}</span>
                   <div className="flex items-center gap-2">
                     <span className={`font-semibold ${isBreaching ? 'text-st-stalled animate-pulse' : 'text-ink-soft'}`}>
                       {slaText}
                     </span>
                     <span className={`px-2 py-0.2 uppercase border rounded-[3px] font-black text-[9px] ${statusColor.border} ${statusColor.bg} ${statusColor.text}`}>
-                      {issue.status}
+                      {statusStr}
                     </span>
                   </div>
                 </div>
 
                 <div className="space-y-1">
                   <h3 className="text-xs font-bold text-ink leading-tight">
-                    {issue.title}
+                    {issue?.title || ''}
                   </h3>
                   <div className="flex items-center gap-1.5 text-[10px] text-ink-soft">
                     <MapPin className="w-3 h-3 text-civic" />
-                    <span className="truncate">{issue.location}</span>
-                    <span className="bg-zinc-100 px-1 rounded text-[9px] font-mono">{issue.ward}</span>
+                    <span className="truncate">{issue?.location || ''}</span>
+                    <span className="bg-zinc-100 px-1 rounded text-[9px] font-mono">{issue?.ward || ''}</span>
                   </div>
                 </div>
 
                 {/* Confirmations tally */}
                 <div className="flex justify-between items-center bg-zinc-50 border border-hairline/50 p-2 rounded-[6px] text-[10px] font-mono">
                   <span className="text-ink-soft">Citizen Tally corroborated:</span>
-                  <span className="text-civic font-black font-sans text-xs">{issue.confirmedCount} Verified pings</span>
+                  <span className="text-civic font-black font-sans text-xs">{issue?.confirmedCount ?? 0} Verified pings</span>
                 </div>
 
                 {/* Case Action Buttons */}
-                {issue.status !== 'RESOLVED' && (
+                {statusStr !== 'RESOLVED' && issue?.id && (
                   <div className="flex gap-2 pt-1">
-                    {issue.status === 'VALIDATED' || issue.status === 'OPEN' ? (
+                    {statusStr === 'VALIDATED' || statusStr === 'OPEN' ? (
                       <button
                         onClick={() => onUpdateStatus(issue.id, 'IN_PROGRESS')}
                         className="flex-1 bg-ink text-white font-mono uppercase font-bold tracking-wider py-2 text-[10px] rounded-[6px] hover:bg-zinc-800 transition-colors flex items-center justify-center gap-1 border border-zinc-900"
@@ -169,7 +174,7 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
                       </button>
                     ) : null}
 
-                    {issue.status !== 'RESOLVED' && (
+                    {statusStr !== 'RESOLVED' && (
                       <button
                         onClick={() => handleOpenResolveModal(issue.id)}
                         className="flex-1 bg-civic hover:bg-civic-deep text-white font-mono uppercase font-bold tracking-wider py-2 text-[10px] rounded-[6px] transition-colors flex items-center justify-center gap-1 border border-civic"
