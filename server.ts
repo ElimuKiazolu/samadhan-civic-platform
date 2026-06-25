@@ -1,14 +1,14 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
+// import { fileURLToPath } from 'url';
 import { dbService } from './src/services/db';
 import { processTriagePipeline } from './src/services/triage';
 import { runSentinel } from './src/services/sentinel';
 import { seedDemoBreachedIssue } from './src/services/seed';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// const __filename = fileURLToPath(import.meta.url);
+// const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
