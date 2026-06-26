@@ -12,4 +12,5 @@ doc/
 scripts/
 serviceAccountKey.json
 db.json
+uploads/
 

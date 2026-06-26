@@ -2,7 +2,6 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import fs from 'fs';
 import path from 'path';
-import { buildEscalationLadder } from './routing';
 
 let firestoreDb: any = null;
 let useLocalFallback = false;
@@ -51,198 +50,26 @@ if (!firebaseInitialized) {
   useLocalFallback = true;
 }
 
-// Ensure local DB file has pre-seeded mock index on startup if not present
-const defaultMockIssues = [
-  {
-    id: 'iss-101',
-    dossierId: 'Dossier #4829-X',
-    title: 'Active sinkhole and severe pothole cluster near Metro Pillar 142',
-    category: 'Roads/Potholes',
-    severity: 'HIGH',
-    status: 'ESCALATED',
-    location: 'University Rd, Metro Corridor',
-    ward: 'Ward 12',
-    age: '3h ago',
-    confirmedCount: 42,
-    departmentId: 'bandhkam',
-    departmentName: 'Bandhkam (Roads & Buildings / Public Works)',
-    zone: 'Central',
-    escalationTier: 1,                 // already dispatched to HOD → next rung is DMC (tier 2)
-    slaHours: 48,
-    slaDueAt: new Date(Date.now() - 3600000).toISOString(), // 1h in the PAST → breached
-    escalationLadder: buildEscalationLadder('bandhkam', 'Bandhkam (Roads & Buildings / Public Works)', 'Central'),
-    agentStatus: 'Setu: Dispatched to RMC Roads. No response in 48h → re-escalated.',
-    mediaUrl: 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?auto=format&fit=crop&w=800&q=80',
-    mediaType: 'photo',
-    isPublic: true,
-    createdAt: new Date(Date.now() - 3 * 3600000).toISOString(),
-    updatedAt: new Date(Date.now() - 3 * 3600000).toISOString(),
-    timeline: [
-      { status: 'SUBMITTED', timestamp: '09:12', date: 'Today', note: 'Citizen photo & GPS logged' },
-      { status: 'VALIDATED', timestamp: '09:14', date: 'Today', note: 'Setu Vision triage: Confirmed High Hazard' },
-      { status: 'ESCALATED', timestamp: '11:22', date: 'Today', note: 'Complaint dispatched to RMC Roads demo inbox' }
-    ],
-    caseLog: [
-      { ts: new Date(Date.now() - 11000).toISOString(), glyph: '›', kind: 'reasoning', text: 'classifying media……………… pothole · severity HIGH' },
-      { ts: new Date(Date.now() - 10000).toISOString(), glyph: '›', kind: 'tool', text: 'locating………………………… Ward 12, University Rd' },
-      { ts: new Date(Date.now() - 9000).toISOString(), glyph: '›', kind: 'tool', text: 'duplicate check……………… merged 3 parallel pings' },
-      { ts: new Date(Date.now() - 8000).toISOString(), glyph: '✦', kind: 'dispatch', text: 'complaint dispatched → RMC Roads (demo inbox)' },
-      { ts: new Date().toISOString(), glyph: '↑', kind: 'escalation', text: 'SLA priority check…………… raised internal priority level' }
-    ],
-    comments: [
-      {
-        id: 'c-1',
-        author: 'Citizen #102',
-        isAgent: false,
-        text: 'This is the third report this week. Very dangerous for two-wheelers at night.',
-        time: '2h ago'
-      },
-      {
-        id: 'c-2',
-        author: 'Setu',
-        isAgent: true,
-        text: 'Citizen #102, corroboration logged. RMC Executive Engineer (Roads) has been alerted with urgent priority tag P-3212.',
-        time: '1h ago'
-      }
-    ]
-  },
-  {
-    id: 'iss-102',
-    dossierId: 'Dossier #3911-S',
-    title: 'Streetlights flickering and completely dead along Canal Walkway',
-    category: 'Streetlights',
-    severity: 'MEDIUM',
-    status: 'STALLED',
-    location: 'Canal Walkway, Kalawad Rd',
-    ward: 'Ward 8',
-    age: '2d ago',
-    confirmedCount: 19,
-    agentStatus: 'Setu: SLA breached (48h limit). Re-escalating to RMC Electrical.',
-    mediaUrl: 'https://images.unsplash.com/photo-1542314831-c6a4d27e66c9?auto=format&fit=crop&w=800&q=80',
-    mediaType: 'photo',
-    isPublic: true,
-    createdAt: new Date(Date.now() - 48 * 3600000).toISOString(),
-    updatedAt: new Date(Date.now() - 48 * 3600000).toISOString(),
-    timeline: [
-      { status: 'SUBMITTED', timestamp: '18:30', date: '2 days ago', note: 'Logged by night walker' },
-      { status: 'VALIDATED', timestamp: '18:31', date: '2 days ago', note: 'Setu triage confirmed' },
-      { status: 'STALLED', timestamp: '18:31', date: 'Today', note: 'SLA countdown breached without acknowledgment' }
-    ],
-    caseLog: [
-      { ts: new Date(Date.now() - 48 * 3600000).toISOString(), glyph: '›', kind: 'reasoning', text: 'classifying media……………… streetlight outage · MED' },
-      { ts: new Date(Date.now() - 47.9 * 3600000).toISOString(), glyph: '✦', kind: 'dispatch', text: 'routed → RMC Electrical Dept' },
-      { ts: new Date(Date.now() - 1000).toISOString(), glyph: '↑', kind: 'escalation', text: 'no acknowledgment in 48h → marked STALLED & alerted chief' }
-    ],
-    comments: [
-      { id: 'c-3', author: 'Ramesh Patel', isAgent: false, text: 'Pitch dark near the sitting benches.', time: '1d ago' }
-    ]
-  },
-  {
-    id: 'iss-103',
-    dossierId: 'Dossier #5102-W',
-    title: 'Severe drinking supply pipeline burst flooding main crossroads',
-    category: 'Water',
-    severity: 'HIGH',
-    status: 'IN_PROGRESS',
-    location: 'Amin Marg Crossroads',
-    ward: 'Ward 10',
-    age: '5h ago',
-    confirmedCount: 63,
-    agentStatus: 'Setu: RMC Water team dispatched emergency valve repair unit.',
-    mediaUrl: 'https://images.unsplash.com/photo-1584467541268-b040f83be3fd?auto=format&fit=crop&w=800&q=80',
-    mediaType: 'photo',
-    isPublic: true,
-    createdAt: new Date(Date.now() - 5 * 3600000).toISOString(),
-    updatedAt: new Date(Date.now() - 5 * 3600000).toISOString(),
-    timeline: [
-      { status: 'SUBMITTED', timestamp: '06:15', date: 'Today', note: 'Reported with video verification' },
-      { status: 'VALIDATED', timestamp: '06:16', date: 'Today', note: 'High acute water loss detected' },
-      { status: 'ESCALATED', timestamp: '06:18', date: 'Today', note: 'Emergency SMS & mail dispatched' },
-      { status: 'IN_PROGRESS', timestamp: '08:40', date: 'Today', note: 'RMC Ward 10 plumber unit on site' }
-    ],
-    caseLog: [
-      { ts: new Date(Date.now() - 5 * 3600000).toISOString(), glyph: '›', kind: 'reasoning', text: 'classifying media……………… acute pipe burst · HIGH hazard' },
-      { ts: new Date(Date.now() - 4.9 * 3600000).toISOString(), glyph: '✦', kind: 'dispatch', text: 'hotline trigger dispatched → RMC Hydraulic Engineer' },
-      { ts: new Date(Date.now() - 3.2 * 3600000).toISOString(), glyph: '✓', kind: 'action', text: 'authority telemetry acknowledged → field crew active' }
-    ],
-    comments: []
-  },
-  {
-    id: 'iss-104',
-    dossierId: 'Dossier #2809-G',
-    title: 'Overflowing community garbage dump blocking pedestrian sidewalk',
-    category: 'Garbage/Waste',
-    severity: 'MEDIUM',
-    status: 'VALIDATED',
-    location: 'Sadhu Vaswani Rd, Behind Temple',
-    ward: 'Ward 12',
-    age: '1d ago',
-    confirmedCount: 14,
-    agentStatus: 'Setu: Awaiting sanitation tipper truck schedule.',
-    mediaUrl: 'https://images.unsplash.com/photo-1530587191325-3db32d826c18?auto=format&fit=crop&w=800&q=80',
-    mediaType: 'photo',
-    isPublic: true,
-    createdAt: new Date(Date.now() - 24 * 3600000).toISOString(),
-    updatedAt: new Date(Date.now() - 24 * 3600000).toISOString(),
-    timeline: [
-      { status: 'SUBMITTED', timestamp: '11:00', date: 'Yesterday', note: 'Citizen complaint' },
-      { status: 'VALIDATED', timestamp: '11:01', date: 'Yesterday', note: 'Routed to Solid Waste Mgmt' }
-    ],
-    caseLog: [
-      { ts: new Date(Date.now() - 24 * 3600000).toISOString(), glyph: '›', kind: 'reasoning', text: 'classifying media……………… solid waste overflow · MED' },
-      { ts: new Date(Date.now() - 23.9 * 3600000).toISOString(), glyph: '✦', kind: 'dispatch', text: 'queued → RMC Health & Sanitation Ward 12' }
-    ],
-    comments: []
-  },
-  {
-    id: 'iss-105',
-    dossierId: 'Dossier #1944-D',
-    title: 'Raw sewage backflow from storm drain during evening peak hours',
-    category: 'Drainage/Sewage',
-    severity: 'HIGH',
-    status: 'RESOLVED',
-    location: 'Yagnik Rd, Near Gymkhana',
-    ward: 'Ward 7',
-    age: '3d ago',
-    confirmedCount: 31,
-    agentStatus: 'Setu: RMC uploaded resolution proof. Community verification pending.',
-    mediaUrl: 'https://images.unsplash.com/photo-1504307651591-00dcc993a6ff?auto=format&fit=crop&w=800&q=80',
-    mediaType: 'photo',
-    isPublic: true,
-    createdAt: new Date(Date.now() - 72 * 3600000).toISOString(),
-    updatedAt: new Date(Date.now() - 72 * 3600000).toISOString(),
-    timeline: [
-      { status: 'SUBMITTED', timestamp: '17:20', date: '3 days ago', note: 'Multiple citizen complaints' },
-      { status: 'VALIDATED', timestamp: '17:21', date: '3 days ago', note: 'Triage complete' },
-      { status: 'ESCALATED', timestamp: '17:25', date: '3 days ago', note: 'Dispatched to Drainage RMC' },
-      { status: 'IN_PROGRESS', timestamp: '10:00', date: 'Yesterday', note: 'Suction jet machine deployed' },
-      { status: 'RESOLVED', timestamp: '16:45', date: 'Yesterday', note: 'Line cleared & sanitized. Proof attached.' }
-    ],
-    caseLog: [
-      { ts: new Date(Date.now() - 72 * 3600000).toISOString(), glyph: '›', kind: 'reasoning', text: 'classifying media……………… drainage backup · HIGH' },
-      { ts: new Date(Date.now() - 71.9 * 3600000).toISOString(), glyph: '✦', kind: 'dispatch', text: 'complaint dispatched → RMC Drainage Dept' },
-      { ts: new Date(Date.now() - 24 * 3600000).toISOString(), glyph: '✓', kind: 'action', text: 'case marked RESOLVED with photographic proof id #RF-99' }
-    ],
-    comments: [
-      { id: 'c-4', author: 'Setu', isAgent: true, text: 'RMC Drainage team has cleared the obstruction. Tap to verify if the area remains clean.', time: '18h ago' }
-    ]
-  }
-];
+// The local JSON fallback starts EMPTY — the live feed shows only real reports
+// (Firestore in cloud mode, or citizen submissions persisted to db.json locally).
+// No mock/seed issues. The /api/seed-demo endpoint remains for the SLA-sentinel
+// demo and plants its own breached case on demand; it is not feed seed data.
+const EMPTY_DB = { issues: [] as any[] };
 
 if (!fs.existsSync(DB_FILE)) {
-  fs.writeFileSync(DB_FILE, JSON.stringify({ issues: defaultMockIssues }, null, 2));
+  fs.writeFileSync(DB_FILE, JSON.stringify(EMPTY_DB, null, 2));
 }
 
 // Local File DB Helper functions
 function readLocalDb() {
   try {
     if (!fs.existsSync(DB_FILE)) {
-      fs.writeFileSync(DB_FILE, JSON.stringify({ issues: defaultMockIssues }, null, 2));
+      fs.writeFileSync(DB_FILE, JSON.stringify(EMPTY_DB, null, 2));
     }
     return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
   } catch (err) {
     console.error('Error reading local JSON db:', err);
-    return { issues: defaultMockIssues };
+    return { issues: [] as any[] };
   }
 }
 
