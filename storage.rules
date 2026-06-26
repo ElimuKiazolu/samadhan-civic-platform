@@ -1,0 +1,34 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Issue media: world-readable (download URLs render in the public feed),
+    // but NO client writes. All uploads go through the Samadhan server's Admin
+    // SDK, which authenticates with the service account and BYPASSES these
+    // rules by design — so a browser/client cannot write here at all. This is
+    // the locked-down posture for an app with no client-side Firebase Auth:
+    // the server is the single, validated upload path (magic-byte sniff + size
+    // cap + rate limit live there).
+    match /issues/{imageId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Everything else: deny by default.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MIGRATION NOTE — client-side uploads (only if you later wire Firebase Auth):
+// If uploads ever move direct-to-Storage from the browser, replace the `issues`
+// write clause above with the auth + content-type + size gated form below. Until
+// then the SERVER enforces exactly these constraints in code, and client writes
+// stay denied:
+//
+//   allow write: if request.auth != null
+//     && request.resource.size < 8 * 1024 * 1024
+//     && request.resource.contentType.matches('image/(jpeg|png|webp|heic|heif)');
+// ─────────────────────────────────────────────────────────────────────────────

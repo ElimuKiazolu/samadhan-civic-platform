@@ -39,4 +39,13 @@ export interface CivicIssue {
   caseLog: CaseLogLine[];
   comments: Comment[];
   isUserCorroborated?: boolean;
+  // Optional server-side fields (denormalized issue shape; see db.ts / triage.ts).
+  description?: string;
+  lat?: number;
+  lng?: number;
+  zone?: string;
+  confidence?: number;
+  isPublic?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }

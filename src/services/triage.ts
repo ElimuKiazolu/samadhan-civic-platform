@@ -109,20 +109,108 @@ Output valid strict JSON matching the requested schema.`;
   }
 }
 
+/**
+ * classifyForPreview — the READ-ONLY half of triage that powers the citizen's
+ * "Setu suggests…" preview step. It classifies (with the full retry/re-ask/
+ * safe-default ladder), resolves ward/zone, and does a NON-mutating duplicate
+ * lookup so the UI can warn the citizen, but it writes NOTHING. The real merge
+ * + persistence happen later, only when the citizen taps "Post" (which calls
+ * processTriagePipeline with the confirmed values as overrides).
+ */
+export async function classifyForPreview(report: {
+  description: string;
+  mediaUrl?: string;
+  lat: number;
+  lng: number;
+}): Promise<{
+  category: TriageResult["category"];
+  severity: TriageResult["severity"];
+  title: string;
+  confidence: number;
+  ward: number;
+  zone: string;
+  duplicateCandidate: { id: string; title: string; confirmedCount: number } | null;
+}> {
+  let classification: TriageResult;
+  try {
+    classification = await retryWithBackoff(() => classifyMedia(report.description, report.mediaUrl));
+  } catch (err) {
+    // Gemini fully unavailable: hand back the same safe low-confidence default
+    // classifyMedia would, so the preview still renders and the citizen can edit.
+    console.warn("classifyForPreview: Gemini unavailable, returning safe default suggestion.", err);
+    classification = {
+      category: "Other",
+      severity: "MEDIUM",
+      confidence: 0.3,
+      title: report.description.substring(0, 50),
+    };
+  }
+
+  const locationDetails = resolveWardAndZone(report.lat, report.lng);
+
+  let duplicateCandidate: { id: string; title: string; confirmedCount: number } | null = null;
+  try {
+    const dup = await dbService.findDuplicates(classification.category, report.lat, report.lng);
+    if (dup) {
+      duplicateCandidate = {
+        id: dup.id,
+        title: dup.title || "Existing nearby report",
+        confirmedCount: dup.confirmedCount || 1,
+      };
+    }
+  } catch (err) {
+    // Read-only dedup check is best-effort; never block the preview on it.
+    console.warn("classifyForPreview: duplicate lookup failed (non-fatal):", err);
+  }
+
+  return {
+    category: classification.category,
+    severity: classification.severity,
+    title: classification.title,
+    confidence: classification.confidence,
+    ward: locationDetails.ward,
+    zone: locationDetails.zone,
+    duplicateCandidate,
+  };
+}
+
 export async function processTriagePipeline(report: {
   description: string;
   mediaUrl?: string;
   lat: number;
   lng: number;
   reporterId?: string;
+  /**
+   * When present, these are the citizen-confirmed values from the preview step.
+   * We trust them in place of a fresh Gemini call (the classification already
+   * ran during classifyForPreview), which also honours any edits the citizen
+   * made. Steps 2–6 (geo, dedup-merge, decision gate, persist, dispatch) run
+   * exactly as in the no-overrides path. Absent overrides => full legacy flow.
+   */
+  overrides?: {
+    category: TriageResult["category"];
+    severity: TriageResult["severity"];
+    title: string;
+    confidence: number;
+  };
 }): Promise<{ outcome: "VALIDATED" | "NEEDS_INFO" | "REJECTED" | "DUPLICATE"; issue: any }> {
   const reporterId = report.reporterId || "anonymous-citizen";
   const startTs = new Date().toISOString();
   console.log(`\n--- START TRIAGE PIPELINE FOR REPORT: "${report.description}" ---`);
 
-  // 1. Media and content classification with 3x retry resilience
-  console.log("Step 1: Running classifyMedia via Gemini-3.5-flash...");
+  // 1. Classification. With confirmed overrides we skip the (already-run) Gemini
+  //    call; otherwise classify live with the 3x retry resilience ladder.
   let classification: TriageResult;
+  if (report.overrides) {
+    classification = {
+      category: report.overrides.category,
+      severity: report.overrides.severity,
+      confidence: report.overrides.confidence,
+      title: report.overrides.title,
+    };
+    console.log(`[Triage Override] Using citizen-confirmed classification -> Category: ${classification.category}, Severity: ${classification.severity}, Confidence: ${classification.confidence}, Title: "${classification.title}"`);
+  } else {
+  console.log("Step 1: Running classifyMedia via Gemini-3.5-flash...");
   try {
     classification = await retryWithBackoff(() => classifyMedia(report.description, report.mediaUrl));
     console.log(`[Triage Success] Gemini classified -> Category: ${classification.category}, Severity: ${classification.severity}, Confidence: ${classification.confidence}, Title: "${classification.title}"`);
@@ -149,6 +237,7 @@ export async function processTriagePipeline(report: {
       geohash,
       ward: `Ward ${locInfo.ward}`,
       zone: locInfo.zone,
+      location: `Ward ${locInfo.ward}, ${locInfo.zone} Zone`,
       isPublic: true,
       confirmedCount: 1,
       agentStatus: "Setu: Offline queue. Awaiting cloud engine review.",
@@ -165,6 +254,7 @@ export async function processTriagePipeline(report: {
     
     const created = await dbService.createIssue(fallbackIssue);
     return { outcome: "VALIDATED", issue: created };
+  }
   }
 
   // 2. Resolve location to geohash & ward details
@@ -262,6 +352,7 @@ export async function processTriagePipeline(report: {
     geohash,
     ward: `Ward ${locationDetails.ward}`,
     zone: locationDetails.zone,
+    location: `Ward ${locationDetails.ward}, ${locationDetails.zone} Zone`,
     // Routing + escalation ladder (present only for VALIDATED issues)
     ...(routing ? {
       departmentId: routing.departmentId,
