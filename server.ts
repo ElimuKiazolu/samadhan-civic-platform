@@ -186,17 +186,34 @@ app.post('/api/report', writeLimiter, async (req, res) => {
     // If the citizen confirmed Setu's classification in the preview, pass it
     // through as overrides (skips a redundant Gemini call, honours their edits).
     // The server still owns the decision gate, run on the carried confidence.
+    // `humanConfirmed` signals the citizen EXPLICITLY picked the category (vs
+    // passively accepting the auto-guess) — it rescues a low-confidence/outage
+    // classification through the gate (real categories only; never "Other").
+    const humanConfirmed = req.body.humanConfirmed === true;
     let overrides:
-      | { category: ReturnType<typeof normalizeCategory>; severity: ReturnType<typeof normalizeSeverity>; title: string; confidence: number }
+      | {
+          category: ReturnType<typeof normalizeCategory>;
+          severity: ReturnType<typeof normalizeSeverity>;
+          title: string;
+          confidence: number;
+          humanConfirmed: boolean;
+        }
       | undefined;
     if (req.body.category || req.body.severity) {
       overrides = {
         category: normalizeCategory(req.body.category),
         severity: normalizeSeverity(req.body.severity),
         title: sanitizeTitle(req.body.title) || description.substring(0, 50),
-        confidence: clampConfidence(req.body.confidence, 0.6),
+        confidence: clampConfidence(req.body.confidence, 0.3),
+        humanConfirmed,
       };
     }
+
+    // Coarse ward-level location → skip duplicate-merge so distinct reports that
+    // share a ward centroid don't wrongly corroborate. Also flag when no real
+    // coords were supplied at all (defensive: UI requires a location).
+    const approxLocation = req.body.approxLocation === true || !coords.ok;
+    const classifierUnavailable = req.body.classifierUnavailable === true;
 
     // Process live triage pipeline (geohash, duplicate merge, decision gate, dispatch)
     const result = await processTriagePipeline({
@@ -206,6 +223,8 @@ app.post('/api/report', writeLimiter, async (req, res) => {
       lng,
       reporterId,
       overrides,
+      approxLocation,
+      classifierUnavailable,
     });
 
     // Outcome: VALIDATED, NEEDS_INFO, REJECTED, DUPLICATE
