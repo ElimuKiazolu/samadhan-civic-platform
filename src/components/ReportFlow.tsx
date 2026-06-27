@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { CivicIssue } from '../types';
-import { X, Camera, MapPin, Check, Loader2, Sparkles, AlertTriangle, Crosshair, ImagePlus } from 'lucide-react';
+import { X, MapPin, Check, Loader2, Sparkles, AlertTriangle, Crosshair, ImagePlus, ServerOff, LocateFixed } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export interface ReportResult {
@@ -21,6 +21,7 @@ interface Suggestion {
   ward: number;
   zone: string;
   duplicateCandidate: { id: string; title: string; confirmedCount: number } | null;
+  classifierUnavailable: boolean;
 }
 
 const CATEGORIES: CivicIssue['category'][] = [
@@ -34,7 +35,18 @@ const CATEGORIES: CivicIssue['category'][] = [
 
 const DESCRIPTION_MAX = 1000;
 
+// Rajkot has 18 wards. A ward pick is the one-tap location fallback when GPS and
+// EXIF give nothing. Each ward maps to a DISTINCT coordinate that the server's
+// resolveWardAndZone() decodes back to the same ward number (formula-consistent:
+// floor(|lat-22.3|*1000) % 18 + 1 === ward), so 18 reports never collapse to one
+// point. These are flagged approxLocation so they skip duplicate-merge.
+const WARDS: number[] = Array.from({ length: 18 }, (_, i) => i + 1);
+function wardCentroid(ward: number): { lat: number; lng: number } {
+  return { lat: 22.3 + (ward - 0.5) / 1000, lng: 70.8 };
+}
+
 type GpsStatus = 'idle' | 'requesting' | 'granted' | 'denied' | 'unavailable';
+type LocationSource = 'gps' | 'exif' | 'manual' | 'ward' | null;
 
 export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => {
   const [step, setStep] = useState<'compose' | 'analyzing' | 'preview' | 'posting' | 'result'>('compose');
@@ -57,17 +69,27 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
   // Setu suggestion + editable preview state
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [editTitle, setEditTitle] = useState('');
-  const [editCategory, setEditCategory] = useState<CivicIssue['category']>('Roads/Potholes');
+  // '' = no category chosen yet (forces an explicit pick when the classifier is
+  // down or unsure). Picking sets categoryConfirmed → human-confirmed rescue.
+  const [editCategory, setEditCategory] = useState<CivicIssue['category'] | ''>('');
   const [editSeverity, setEditSeverity] = useState<CivicIssue['severity']>('MEDIUM');
   const [editLat, setEditLat] = useState('');
   const [editLng, setEditLng] = useState('');
+  const [locationSource, setLocationSource] = useState<LocationSource>(null);
+  const [wardPick, setWardPick] = useState(''); // controls the one-tap ward selector
+
+  // Degradation signals
+  const [classifierDown, setClassifierDown] = useState(false);
+  const [categoryConfirmed, setCategoryConfirmed] = useState(false);
 
   const [analyzeError, setAnalyzeError] = useState('');
   const [postError, setPostError] = useState('');
   const [result, setResult] = useState<ReportResult | null>(null);
 
-  // GPS is primary: request it as soon as the sheet opens.
-  useEffect(() => {
+  // GPS is primary. Reusable so the preview's "Use my location" button can
+  // re-trigger it on a user gesture (desktop browsers often need that — the
+  // silent auto-attempt on mount frequently yields nothing).
+  const requestGps = () => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       setGpsStatus('unavailable');
       return;
@@ -75,12 +97,23 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
     setGpsStatus('requesting');
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setGpsCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        const c = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setGpsCoords(c);
         setGpsStatus('granted');
+        // If we're already on the preview, fill the fields immediately.
+        setEditLat(c.lat.toFixed(6));
+        setEditLng(c.lng.toFixed(6));
+        setLocationSource('gps');
+        setWardPick('');
       },
       () => setGpsStatus('denied'),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
+  };
+
+  useEffect(() => {
+    requestGps();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Revoke the object URL when the chosen file changes / unmounts.
@@ -133,6 +166,7 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
 
     // 2. Resolve coordinates by the ladder: GPS → EXIF → none (manual later).
     const coords = gpsCoords ?? exifFromUpload ?? null;
+    const source: LocationSource = gpsCoords ? 'gps' : exifFromUpload ? 'exif' : null;
 
     // 3. Read-only classification for the preview.
     try {
@@ -148,34 +182,43 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
       });
       if (!res.ok) throw new Error('classify failed');
       const s: Suggestion = await res.json();
-      applySuggestion(s, coords);
+      setClassifierDown(s.classifierUnavailable === true);
+      applySuggestion(s, coords, source);
     } catch (err) {
-      // Degrade: let the citizen fill in details manually (Doc 6 law 2).
-      setAnalyzeError('Setu could not auto-analyze this — please set the details below.');
+      // Our own endpoint/network failed — treat as classifier unavailable so the
+      // citizen gets the same manual-classification path (Doc 6 law 2: degrade).
+      setClassifierDown(true);
       applySuggestion(
         {
           category: 'Other',
           severity: 'MEDIUM',
           title: description.trim().slice(0, 50),
-          confidence: 0.4,
+          confidence: 0.3,
           ward: 0,
           zone: 'Central',
           duplicateCandidate: null,
+          classifierUnavailable: true,
         },
-        coords
+        coords,
+        source
       );
     }
     setStep('preview');
   };
 
-  const applySuggestion = (s: Suggestion, coords: { lat: number; lng: number } | null) => {
+  const applySuggestion = (s: Suggestion, coords: { lat: number; lng: number } | null, source: LocationSource) => {
     setSuggestion(s);
     setEditTitle(s.title);
-    setEditCategory(s.category);
+    // Force an explicit category pick when the classifier was unavailable or
+    // unsure — otherwise pre-fill Setu's confident guess.
+    const needsManual = s.classifierUnavailable || s.confidence < 0.5;
+    setEditCategory(needsManual ? '' : s.category);
+    setCategoryConfirmed(false);
     setEditSeverity(s.severity);
     if (coords) {
       setEditLat(coords.lat.toFixed(6));
       setEditLng(coords.lng.toFixed(6));
+      setLocationSource(source);
     }
   };
 
@@ -196,7 +239,13 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
           title: editTitle.trim(),
           category: editCategory,
           severity: editSeverity,
-          confidence: suggestion?.confidence ?? 0.6,
+          confidence: suggestion?.confidence ?? 0.3,
+          // The citizen explicitly picked the category → rescue a low-confidence
+          // or outage classification through the server's decision gate.
+          humanConfirmed: categoryConfirmed,
+          // Ward-level coordinates are approximate → server skips duplicate-merge.
+          approxLocation: locationSource === 'ward',
+          classifierUnavailable: classifierDown,
           ...(hasCoords ? { lat: latNum, lng: lngNum } : {}),
         }),
       });
@@ -228,6 +277,17 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
       </span>
     );
   };
+
+  // Post gating: a location is always required (no silent default), and a
+  // category must be explicitly chosen whenever the classifier was unavailable
+  // or unsure — that explicit pick is the human-confirmed rescue signal.
+  const hasCoords = Number.isFinite(parseFloat(editLat)) && Number.isFinite(parseFloat(editLng));
+  const needsManualCategory = classifierDown || (suggestion ? suggestion.confidence < 0.5 : true);
+  const categoryChosen = editCategory !== '';
+  const canPost = hasCoords && (!needsManualCategory || categoryChosen);
+
+  const setManualLat = (v: string) => { setEditLat(v); setLocationSource('manual'); setWardPick(''); };
+  const setManualLng = (v: string) => { setEditLng(v); setLocationSource('manual'); setWardPick(''); };
 
   return (
     <div className="absolute inset-0 bg-ink/75 flex items-center justify-center z-50 p-4">
@@ -329,9 +389,27 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
           {/* STEP 3 — Editable preview */}
           {step === 'preview' && (
             <div className="p-5 space-y-4">
+              {/* Graceful-degradation banner — NOT an apology. Frames the outage
+                  as expected and tells the citizen exactly what to do. */}
+              {classifierDown && (
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-[10px] p-3 space-y-1.5">
+                  <div className="flex items-center gap-2 text-amber-900">
+                    <ServerOff className="w-4 h-4 flex-shrink-0" />
+                    <p className="text-[11px] font-black uppercase tracking-wide">AI classifier temporarily unavailable</p>
+                  </div>
+                  <p className="text-[10px] text-amber-800 leading-relaxed">
+                    Setu's AI classifier is temporarily unavailable (Gemini returned 503 — Google's servers are busy).
+                    Samadhan is built to <span className="font-bold">degrade gracefully</span> — classify your report
+                    manually below and it posts normally.
+                  </p>
+                </div>
+              )}
+
               <div className="flex items-center gap-2 text-civic">
                 <Sparkles className="w-4 h-4" />
-                <p className="text-[11px] font-mono font-bold uppercase tracking-wider">Setu suggests — edit anything</p>
+                <p className="text-[11px] font-mono font-bold uppercase tracking-wider">
+                  {classifierDown ? 'Confirm the details below' : 'Setu suggests — edit anything'}
+                </p>
               </div>
 
               {analyzeError && (
@@ -370,12 +448,19 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-wider font-mono text-ink-soft">Category</label>
+                  <label className="text-[10px] font-black uppercase tracking-wider font-mono text-ink-soft">
+                    Category {needsManualCategory && !categoryChosen && <span className="text-amber-600">· pick one</span>}
+                  </label>
                   <select
                     value={editCategory}
-                    onChange={(e) => setEditCategory(e.target.value as CivicIssue['category'])}
-                    className="w-full bg-white text-xs border border-hairline rounded-[6px] p-2 focus:outline-none focus:border-civic font-mono"
+                    onChange={(e) => { setEditCategory(e.target.value as CivicIssue['category']); setCategoryConfirmed(true); }}
+                    className={`w-full bg-white text-xs border rounded-[6px] p-2 focus:outline-none focus:border-civic font-mono ${
+                      needsManualCategory && !categoryChosen ? 'border-amber-400 bg-amber-50/40' : 'border-hairline'
+                    }`}
                   >
+                    {(needsManualCategory || !categoryChosen) && (
+                      <option value="" disabled>— Select a category —</option>
+                    )}
                     {CATEGORIES.map((c) => (
                       <option key={c} value={c}>{c}</option>
                     ))}
@@ -395,16 +480,28 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
                 </div>
               </div>
 
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <label className="text-[10px] font-black uppercase tracking-wider font-mono text-ink-soft flex items-center gap-1">
-                  <MapPin className="w-3 h-3" /> Location (lat / lng)
+                  <MapPin className="w-3 h-3" /> Location
+                  {!hasCoords && <span className="text-amber-600 normal-case">· required to post</span>}
                 </label>
+
+                {/* Primary: re-trigger GPS on a user gesture (fixes desktop). */}
+                <button
+                  type="button"
+                  onClick={requestGps}
+                  className="w-full flex items-center justify-center gap-2 bg-white border border-hairline hover:border-civic rounded-[8px] py-2 text-[11px] font-mono font-bold text-ink-soft hover:text-civic transition-all"
+                >
+                  <LocateFixed className={`w-3.5 h-3.5 ${gpsStatus === 'requesting' ? 'animate-pulse text-civic' : ''}`} />
+                  {gpsStatus === 'requesting' ? 'Locating…' : gpsStatus === 'granted' ? 'Update my location' : 'Use my current location'}
+                </button>
+
                 <div className="grid grid-cols-2 gap-2">
                   <input
                     type="text"
                     inputMode="decimal"
                     value={editLat}
-                    onChange={(e) => setEditLat(e.target.value)}
+                    onChange={(e) => setManualLat(e.target.value)}
                     placeholder="Latitude"
                     className="bg-white text-xs border border-hairline rounded-[6px] p-2 focus:outline-none focus:border-civic font-mono"
                   />
@@ -412,18 +509,45 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
                     type="text"
                     inputMode="decimal"
                     value={editLng}
-                    onChange={(e) => setEditLng(e.target.value)}
+                    onChange={(e) => setManualLng(e.target.value)}
                     placeholder="Longitude"
                     className="bg-white text-xs border border-hairline rounded-[6px] p-2 focus:outline-none focus:border-civic font-mono"
                   />
                 </div>
+
+                {/* One-tap fallback when GPS/EXIF give nothing: pick a ward. */}
+                <div className="space-y-1">
+                  <label className="text-[9px] font-mono text-zinc-400 uppercase tracking-wider">No GPS? Pick your ward (one tap)</label>
+                  <select
+                    value={wardPick}
+                    onChange={(e) => {
+                      const w = parseInt(e.target.value, 10);
+                      setWardPick(e.target.value);
+                      if (!w) return;
+                      const c = wardCentroid(w);
+                      setEditLat(c.lat.toFixed(6));
+                      setEditLng(c.lng.toFixed(6));
+                      setLocationSource('ward');
+                    }}
+                    className="w-full bg-white text-xs border border-hairline rounded-[6px] p-2 focus:outline-none focus:border-civic font-mono"
+                  >
+                    <option value="">— Select your ward —</option>
+                    {WARDS.map((w) => (
+                      <option key={w} value={w}>Ward {w}</option>
+                    ))}
+                  </select>
+                </div>
+
                 <p className="text-[9px] font-mono text-zinc-400 leading-relaxed">
-                  {gpsStatus === 'granted'
+                  {locationSource === 'gps'
                     ? 'From device GPS.'
-                    : exifCoords
+                    : locationSource === 'exif'
                       ? 'From photo EXIF.'
-                      : 'Set manually — Setu resolves the ward from these coordinates.'}
-                  {suggestion && suggestion.ward > 0 && ` Setu read: Ward ${suggestion.ward}, ${suggestion.zone} Zone.`}
+                      : locationSource === 'ward'
+                        ? 'Approximate ward centre — fine for routing; exact pin not needed.'
+                        : locationSource === 'manual'
+                          ? 'Manually entered coordinates.'
+                          : 'Set your location to post — use GPS, a ward, or type coordinates.'}
                 </p>
               </div>
 
@@ -470,10 +594,20 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
         )}
 
         {step === 'preview' && (
-          <div className="p-4 border-t border-hairline bg-white flex-shrink-0">
+          <div className="p-4 border-t border-hairline bg-white flex-shrink-0 space-y-1.5">
+            {!canPost && (
+              <p className="text-center text-[9px] font-mono text-amber-600 uppercase tracking-wider">
+                {!hasCoords ? 'Set a location to post' : 'Pick a category to post'}
+              </p>
+            )}
             <button
               onClick={handlePost}
-              className="w-full bg-civic hover:bg-civic-deep text-white font-display font-black py-3 text-xs uppercase tracking-widest border-2 border-civic-deep shadow-[3px_3px_0px_0px_rgba(10,79,76,1)] active:shadow-none active:translate-x-[2px] active:translate-y-[2px]"
+              disabled={!canPost}
+              className={`w-full font-display font-black py-3 text-xs uppercase tracking-widest transition-all ${
+                canPost
+                  ? 'bg-civic hover:bg-civic-deep text-white border-2 border-civic-deep shadow-[3px_3px_0px_0px_rgba(10,79,76,1)] active:shadow-none active:translate-x-[2px] active:translate-y-[2px]'
+                  : 'bg-zinc-200 text-zinc-400 cursor-not-allowed'
+              }`}
             >
               Post to feed
             </button>
