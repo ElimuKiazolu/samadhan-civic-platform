@@ -395,6 +395,60 @@ export const dbService = {
     return null;
   },
 
+  /**
+   * Records a corroboration ("I see this too"). One-per-user enforced structurally
+   * by doc id = uid (Doc 5: issues/{id}/corroborations/{uid}). Atomically bumps
+   * BOTH corroborationCount (Doc 5) and confirmedCount (the client/feed/dedup field)
+   * so they never drift. Idempotent: a repeat uid is a no-op. Returns the new count.
+   */
+  async addCorroboration(issueId: string, uid: string): Promise<{ added: boolean; count: number }> {
+    const cleanUid = (uid || 'citizen-demo').toString().slice(0, 128);
+
+    if (!useLocalFallback && firestoreDb) {
+      try {
+        const docRef = firestoreDb.collection('issues').doc(issueId);
+        const corrRef = docRef.collection('corroborations').doc(cleanUid);
+        const result = await firestoreDb.runTransaction(async (tx: any) => {
+          const [issueSnap, corrSnap] = await Promise.all([tx.get(docRef), tx.get(corrRef)]);
+          if (!issueSnap.exists) return { added: false, count: 0 };
+          const data = issueSnap.data() || {};
+          const current = Number(data.confirmedCount ?? data.corroborationCount ?? 0);
+          if (corrSnap.exists) {
+            return { added: false, count: current }; // one per user — no double count
+          }
+          tx.set(corrRef, { uid: cleanUid, createdAt: new Date().toISOString() });
+          tx.update(docRef, {
+            corroborationCount: FieldValue.increment(1),
+            confirmedCount: FieldValue.increment(1),
+            updatedAt: new Date().toISOString(),
+          });
+          return { added: true, count: current + 1 };
+        });
+        return result;
+      } catch (error) {
+        console.error(`Firestore addCorroboration to ${issueId} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
+      }
+    }
+
+    // Fallback mode — embed a corroborations uid array on the issue.
+    const local = readLocalDb();
+    const issue = local.issues.find((i: any) => i.id === issueId);
+    if (!issue) return { added: false, count: 0 };
+    issue.corroborations = Array.isArray(issue.corroborations) ? issue.corroborations : [];
+    const currentCount = Number(issue.confirmedCount ?? issue.corroborationCount ?? 0);
+    if (issue.corroborations.includes(cleanUid)) {
+      return { added: false, count: currentCount };
+    }
+    issue.corroborations.push(cleanUid);
+    const nextCount = currentCount + 1;
+    issue.confirmedCount = nextCount;
+    issue.corroborationCount = nextCount;
+    issue.updatedAt = new Date().toISOString();
+    writeLocalDb(local);
+    return { added: true, count: nextCount };
+  },
+
   async addCaseLog(issueId: string, entry: any): Promise<any> {
     const cleanEntry = {
       ts: entry.ts || new Date().toISOString(),

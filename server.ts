@@ -7,6 +7,7 @@ import exifr from 'exifr';
 // import { fileURLToPath } from 'url';
 import { dbService } from './src/services/db';
 import { processTriagePipeline, classifyForPreview } from './src/services/triage';
+import { decideSetuReply } from './src/services/decorum';
 import { runSentinel } from './src/services/sentinel';
 import { seedDemoBreachedIssue } from './src/services/seed';
 import { uploadIssueImage, UPLOADS_DIR } from './src/services/storage';
@@ -45,6 +46,16 @@ const writeLimiter = rateLimit({
   message: { error: 'Too many reports from this device. Please wait a minute and try again.' },
 });
 
+// Lighter per-IP limiter for social writes (comments/corroborations). Separate
+// budget from reports so commenting can't exhaust the Gemini/Storage allowance.
+const socialLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many actions from this device. Please slow down a moment.' },
+});
+
 // Multipart parser for the upload endpoint: memory storage, single file, hard
 // 8 MB cap enforced by multer before the buffer ever reaches our handler.
 const upload = multer({
@@ -75,6 +86,58 @@ app.get('/api/issues/:id', async (req, res) => {
   } catch (error: any) {
     console.error(`Error retrieving issue ${req.params.id}:`, error);
     res.status(500).json({ error: 'Failed to retrieve selected dossier' });
+  }
+});
+
+// Post a citizen comment to an issue's thread (persisted to the comments
+// subcollection per Doc 5). After persisting, the decorum gate (rule-based, NO
+// Gemini call) decides whether Setu adds a fact-only reply or stays silent.
+app.post('/api/issues/:id/comments', socialLimiter, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const desc = sanitizeDescription(req.body.text);
+    if (!desc.ok) {
+      return res.status(400).json({ error: 'Comment text is required.' });
+    }
+    const issue = await dbService.getIssueById(id);
+    if (!issue) return res.status(404).json({ error: 'Dossier not found' });
+
+    const citizenComment = await dbService.addComment(id, {
+      author: sanitizeTitle(req.body.author) || 'You (Citizen)',
+      isAgent: false,
+      text: desc.value,
+    });
+
+    // Decorum gate: reply ONLY when value-adding (and not back-to-back). The
+    // issue we loaded carries the current comment list for the debounce check.
+    let setuReply: any = null;
+    try {
+      const replyText = decideSetuReply(desc.value, issue);
+      if (replyText) {
+        setuReply = await dbService.addComment(id, { author: 'Setu', isAgent: true, text: replyText });
+      }
+    } catch (gateErr) {
+      console.warn('Decorum gate failed (non-fatal, comment still saved):', gateErr);
+    }
+
+    res.status(201).json({ ok: true, comment: citizenComment, setuReply });
+  } catch (error: any) {
+    console.error(`Error posting comment to ${req.params.id}:`, error);
+    res.status(500).json({ error: 'Could not save your comment. Please try again.' });
+  }
+});
+
+// Corroborate an issue ("I see this too"). One-per-device via the client uid
+// (no auth yet); persisted to corroborations/{uid} with atomic count increment.
+app.post('/api/issues/:id/corroborate', socialLimiter, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const uid = sanitizeTitle(req.body.reporterId) || 'citizen-demo';
+    const result = await dbService.addCorroboration(id, uid);
+    res.status(200).json({ ok: true, ...result });
+  } catch (error: any) {
+    console.error(`Error corroborating ${req.params.id}:`, error);
+    res.status(500).json({ error: 'Could not record your confirmation. Please try again.' });
   }
 });
 

@@ -8,17 +8,20 @@ interface IssueDetailModalProps {
   issue: CivicIssue;
   onClose: () => void;
   onCorroborate: (id: string) => void;
-  onAddComment: (issueId: string, comment: Comment) => void;
+  /** Re-fetch the full dossier (/api/issues/:id) so persisted comments + any
+   *  decorum-gated Setu reply render from the server. */
+  onRefreshDetail: (issueId: string) => void | Promise<void>;
 }
 
 export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   issue,
   onClose,
   onCorroborate,
-  onAddComment,
+  onRefreshDetail,
 }) => {
   const [isCaseLogOpen, setIsCaseLogOpen] = useState(true);
   const [commentText, setCommentText] = useState('');
+  const [sending, setSending] = useState(false);
   const [corroborated, setCorroborated] = useState(issue.isUserCorroborated || false);
   const [localConfirmedCount, setLocalConfirmedCount] = useState(issue.confirmedCount);
   
@@ -54,42 +57,30 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
     }
   };
 
-  const handleSendComment = (e: React.FormEvent) => {
+  const handleSendComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!commentText.trim()) return;
+    const text = commentText.trim();
+    if (!text || sending) return;
 
-    const newComment: Comment = {
-      id: `comment-${Date.now()}`,
-      author: 'You (Citizen)',
-      isAgent: false,
-      text: commentText,
-      time: 'Just now',
-    };
-
-    onAddComment(issue.id, newComment);
-    const sentText = commentText;
+    setSending(true);
     setCommentText('');
-
-    // Setu simulated reply
-    setTimeout(() => {
-      let setuResponseText = '';
-      if (sentText.toLowerCase().includes('pothole') || sentText.toLowerCase().includes('road')) {
-        setuResponseText = `Understood. I have flagged this spot to the Rajkot Municipal Sanitation & Road Maintenance Unit catalog. Case code reference: RC-${Math.floor(10000 + Math.random() * 90000)}.`;
-      } else if (sentText.toLowerCase().includes('danger') || sentText.toLowerCase().includes('accident')) {
-        setuResponseText = `Warning recorded. Escalating safety assessment parameters to alert Ward Road Safety supervisor. High visibility markers recommended.`;
-      } else {
-        setuResponseText = `Dossier update: Corroborative feedback added. Dispatched message update to the respective Municipal Engineer.`;
-      }
-
-      const setuReply: Comment = {
-        id: `setu-reply-${Date.now()}`,
-        author: 'Setu',
-        isAgent: true,
-        text: setuResponseText,
-        time: 'Just now',
-      };
-      onAddComment(issue.id, setuReply);
-    }, 1200);
+    try {
+      // Persist to the comments subcollection. The server applies Setu's
+      // rule-based decorum gate (reply only when value-adding; never fabricates).
+      const res = await fetch(`/api/issues/${issue.id}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, author: 'You (Citizen)' }),
+      });
+      if (!res.ok) throw new Error('comment failed');
+      // Reload the full dossier so the persisted comment (+ any Setu reply) show.
+      await onRefreshDetail(issue.id);
+    } catch {
+      // Restore the text so the citizen can retry; nothing was persisted.
+      setCommentText(text);
+    } finally {
+      setSending(false);
+    }
   };
 
   const colors = getStatusColors(issue.status);
@@ -315,12 +306,14 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
             type="text"
             value={commentText}
             onChange={(e) => setCommentText(e.target.value)}
-            placeholder="Add to transparent civic record..."
-            className="flex-1 text-xs border border-hairline rounded-[6px] px-3.5 py-2 focus:outline-none focus:border-civic font-mono"
+            disabled={sending}
+            placeholder={sending ? 'Posting…' : 'Add to transparent civic record...'}
+            className="flex-1 text-xs border border-hairline rounded-[6px] px-3.5 py-2 focus:outline-none focus:border-civic font-mono disabled:opacity-60"
           />
           <button
             type="submit"
-            className="bg-civic text-white p-2 rounded-[6px] hover:bg-civic-deep transition-colors"
+            disabled={sending || !commentText.trim()}
+            className="bg-civic text-white p-2 rounded-[6px] hover:bg-civic-deep transition-colors disabled:opacity-50"
           >
             <Send className="w-4 h-4" />
           </button>
