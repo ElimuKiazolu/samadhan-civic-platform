@@ -6,8 +6,9 @@ import { ReportFlow, ReportResult } from './components/ReportFlow';
 import { AuthorityDashboard } from './components/AuthorityDashboard';
 import { AlertsView } from './components/AlertsView';
 import { YouProfile } from './components/YouProfile';
+import { ImpactDashboard } from './components/ImpactDashboard';
 import { deriveAlerts } from './lib/alerts';
-import { Radio, Users, Bell, User, Plus, ShieldAlert, SlidersHorizontal, MapPin, Eye, CheckCircle2 } from 'lucide-react';
+import { Radio, Users, Bell, User, Plus, ShieldAlert, SlidersHorizontal, MapPin, Eye, CheckCircle2, BarChart3 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Derive a human "age" label from an ISO createdAt timestamp. Real issues from
@@ -64,7 +65,7 @@ export default function App() {
   // truth). No bundled mock data — only real Firestore/local reports appear.
   const [issues, setIssues] = useState<CivicIssue[]>([]);
   const [selectedIssue, setSelectedIssue] = useState<CivicIssue | null>(null);
-  const [activeTab, setActiveTab] = useState<'feed' | 'alerts' | 'you'>('feed');
+  const [activeTab, setActiveTab] = useState<'feed' | 'impact' | 'alerts' | 'you'>('feed');
   const [isReporting, setIsReporting] = useState(false);
   const [role, setRole] = useState<'citizen' | 'authority'>('citizen');
   
@@ -357,6 +358,8 @@ export default function App() {
                 </div>
               )}
 
+              {activeTab === 'impact' && <ImpactDashboard issues={issues} />}
+
               {activeTab === 'alerts' && <AlertsView alerts={alerts} readIds={readAlertIds} />}
 
               {activeTab === 'you' && (
@@ -386,6 +389,16 @@ export default function App() {
               >
                 <Radio className="w-5 h-5" />
                 <span className="text-[10px] font-mono uppercase tracking-tight">Feed</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('impact')}
+                className={`flex flex-col items-center gap-1 transition-all ${
+                  activeTab === 'impact' ? 'text-civic font-black scale-105' : 'text-zinc-400'
+                }`}
+              >
+                <BarChart3 className="w-5 h-5" />
+                <span className="text-[10px] font-mono uppercase tracking-tight">Impact</span>
               </button>
 
               {/* Centered Emphasized Report Button */}
