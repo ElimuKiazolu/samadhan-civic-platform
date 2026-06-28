@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
-import { CivicIssue, Comment } from './types';
+import { useState, useEffect, useMemo } from 'react';
+import { CivicIssue } from './types';
 import { IssueCard } from './components/IssueCard';
 import { IssueDetailModal } from './components/IssueDetailModal';
 import { ReportFlow, ReportResult } from './components/ReportFlow';
 import { AuthorityDashboard } from './components/AuthorityDashboard';
 import { AlertsView } from './components/AlertsView';
 import { YouProfile } from './components/YouProfile';
+import { deriveAlerts } from './lib/alerts';
 import { Radio, Users, Bell, User, Plus, ShieldAlert, SlidersHorizontal, MapPin, Eye, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -34,6 +35,30 @@ function hydrateIssue(issue: any): CivicIssue {
   };
 }
 
+// Stable anonymous per-device id (no auth yet) → "one corroboration per device".
+function getDeviceUid(): string {
+  try {
+    let id = localStorage.getItem('samadhan_uid');
+    if (!id) {
+      id = `cit-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+      localStorage.setItem('samadhan_uid', id);
+    }
+    return id;
+  } catch {
+    return 'citizen-demo';
+  }
+}
+
+// Read-alert ids persist in localStorage so the bell's unread dot survives refresh.
+const READ_ALERTS_KEY = 'samadhan_read_alerts';
+function loadReadAlertIds(): Set<string> {
+  try {
+    return new Set<string>(JSON.parse(localStorage.getItem(READ_ALERTS_KEY) || '[]'));
+  } catch {
+    return new Set<string>();
+  }
+}
+
 export default function App() {
   // Feed starts EMPTY and is populated from the live API (the single source of
   // truth). No bundled mock data — only real Firestore/local reports appear.
@@ -46,6 +71,26 @@ export default function App() {
   // Local reported list tracker to populate in "You" tab dynamically
   const [reportedIds, setReportedIds] = useState<string[]>([]);
   const [selectedWard, setSelectedWard] = useState<string>('All Wards');
+
+  // Stable device id for one-per-device corroboration; alert read-state (localStorage).
+  const deviceUid = useMemo(getDeviceUid, []);
+  const [readAlertIds, setReadAlertIds] = useState<Set<string>>(() => loadReadAlertIds());
+
+  // Real alerts derived from live issue events (no mock data).
+  const alerts = useMemo(() => deriveAlerts(issues), [issues]);
+  const unreadCount = useMemo(
+    () => alerts.reduce((n, a) => (readAlertIds.has(a.id) ? n : n + 1), 0),
+    [alerts, readAlertIds]
+  );
+
+  const markAlertsRead = () => {
+    setReadAlertIds((prev) => {
+      const next = new Set(prev);
+      alerts.forEach((a) => next.add(a.id));
+      try { localStorage.setItem(READ_ALERTS_KEY, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
 
   // Re-fetch the live issue feed from the Express API. Reused on mount and after
   // the authority "Run SLA Sweep" so the feed visibly reflects sentinel escalations.
@@ -69,42 +114,69 @@ export default function App() {
     refreshIssues();
   }, []);
 
-  // Update selected issue reference when active issue is mutated globally
+  // Keep the open dossier's TOP-LEVEL fields in sync when the feed refreshes,
+  // but PRESERVE detail-loaded subcollections (comments/caseLog/timeline) — the
+  // feed list doesn't carry them, so a background refresh must not wipe them.
+  // Depends on `issues` only (functional update) to avoid a re-render loop.
   useEffect(() => {
-    if (selectedIssue) {
-      const updated = issues.find((i) => i.id === selectedIssue.id);
-      if (updated && updated !== selectedIssue) {
-        setSelectedIssue(updated);
-      }
-    }
-  }, [issues, selectedIssue]);
+    setSelectedIssue((prev) => {
+      if (!prev) return prev;
+      const updated = issues.find((i) => i.id === prev.id);
+      if (!updated) return prev;
+      return {
+        ...updated,
+        comments: prev.comments?.length ? prev.comments : updated.comments,
+        caseLog: prev.caseLog?.length ? prev.caseLog : updated.caseLog,
+        timeline: prev.timeline?.length ? prev.timeline : updated.timeline,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issues]);
 
-  const handleCorroborate = (issueId: string) => {
-    setIssues((prev) =>
-      prev.map((issue) =>
-        issue.id === issueId
-          ? {
-              ...issue,
-              confirmedCount: issue.confirmedCount + 1,
-              isUserCorroborated: true,
-              agentStatus: 'Setu: Corroborated. Relaying density spike data to department directors.',
-            }
-          : issue
-      )
-    );
+  // Load the FULL dossier (comments + caseLog + timeline) from /api/issues/:id.
+  const refetchDetail = async (issueId: string) => {
+    try {
+      const res = await fetch(`/api/issues/${issueId}`);
+      if (res.ok) {
+        const full = await res.json();
+        setSelectedIssue(hydrateIssue(full));
+      }
+    } catch (err) {
+      console.log('Detail refetch failed; keeping current view', err);
+    }
   };
 
-  const handleAddComment = (issueId: string, newComment: Comment) => {
+  // Open a dossier: show the feed item instantly, then hydrate with full detail.
+  const selectIssue = (issue: CivicIssue) => {
+    setSelectedIssue(issue);
+    refetchDetail(issue.id);
+  };
+
+  // Corroboration now PERSISTS (one-per-device via deviceUid). Optimistic, then
+  // reconciled to the authoritative server count.
+  const handleCorroborate = async (issueId: string) => {
     setIssues((prev) =>
       prev.map((issue) =>
         issue.id === issueId
-          ? {
-              ...issue,
-              comments: [...issue.comments, newComment],
-            }
+          ? { ...issue, confirmedCount: (issue.confirmedCount || 0) + 1, isUserCorroborated: true }
           : issue
       )
     );
+    try {
+      const res = await fetch(`/api/issues/${issueId}/corroborate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reporterId: deviceUid }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data.count === 'number') {
+        setIssues((prev) => prev.map((i) => (i.id === issueId ? { ...i, confirmedCount: data.count, isUserCorroborated: true } : i)));
+        setSelectedIssue((prev) => (prev && prev.id === issueId ? { ...prev, confirmedCount: data.count, isUserCorroborated: true } : prev));
+      }
+    } catch (err) {
+      console.log('Corroborate failed', err);
+    }
   };
 
   // ReportFlow owns the upload + classify + post round-trips and hands back the
@@ -277,7 +349,7 @@ export default function App() {
                         <IssueCard
                           key={issue.id}
                           issue={issue}
-                          onSelect={(iss) => setSelectedIssue(iss)}
+                          onSelect={selectIssue}
                         />
                       ))
                     )}
@@ -285,12 +357,12 @@ export default function App() {
                 </div>
               )}
 
-              {activeTab === 'alerts' && <AlertsView />}
+              {activeTab === 'alerts' && <AlertsView alerts={alerts} readIds={readAlertIds} />}
 
               {activeTab === 'you' && (
                 <YouProfile
                   userIssues={userCreatedIssues}
-                  onSelectIssue={(iss) => setSelectedIssue(iss)}
+                  onSelectIssue={selectIssue}
                 />
               )}
             </>
@@ -325,14 +397,18 @@ export default function App() {
               </button>
 
               <button
-                onClick={() => setActiveTab('alerts')}
+                onClick={() => { setActiveTab('alerts'); markAlertsRead(); }}
                 className={`flex flex-col items-center gap-1 transition-all ${
                   activeTab === 'alerts' ? 'text-civic font-black scale-105' : 'text-zinc-400'
                 }`}
               >
                 <div className="relative">
                   <Bell className="w-5 h-5" />
-                  <span className="absolute top-0 right-0 w-2 h-2 bg-st-stalled rounded-full border border-white"></span>
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-0.5 bg-st-stalled rounded-full border border-white flex items-center justify-center text-[8px] font-bold text-white leading-none">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
                 </div>
                 <span className="text-[10px] font-mono uppercase tracking-tight">Alerts</span>
               </button>
@@ -365,7 +441,7 @@ export default function App() {
               issue={selectedIssue}
               onClose={() => setSelectedIssue(null)}
               onCorroborate={handleCorroborate}
-              onAddComment={handleAddComment}
+              onRefreshDetail={refetchDetail}
             />
           )}
         </AnimatePresence>
