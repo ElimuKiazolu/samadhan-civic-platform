@@ -1,7 +1,7 @@
 import { Type } from "@google/genai";
 import { dbService } from "./db";
 import { encodeGeohash, resolveWardAndZone } from "../lib/geohash";
-import { getGeminiClient, retryWithBackoff, hasGeminiKey, GEMINI_MODEL } from "./gemini";
+import { getGeminiClient, retryWithBackoff, hasGeminiKey, GEMINI_MODEL, isModelUnavailableError } from "./gemini";
 import { loadImagePart, type InlineImagePart } from "../lib/image";
 import { routeIssue, type IssueCategory } from "./routing";
 import { dispatchComplaint } from "./dispatch";
@@ -117,13 +117,13 @@ Output valid strict JSON matching the requested schema.`;
       return classifyMedia(description + " (Please output strictly valid raw JSON)", mediaUrl, true, imagePart);
     }
 
-    // Default safe fallback if all retries fail
-    return {
-      category: "Other",
-      severity: "MEDIUM",
-      confidence: 0.3, // low confidence defaults to NEEDS_INFO
-      title: description.substring(0, 50) + "..."
-    };
+    // PROPAGATE the failure instead of swallowing it into a safe default.
+    // Swallowing here defeated retryWithBackoff (it never saw a throw to retry)
+    // and made a Gemini 503 outage indistinguishable from a genuine low-confidence
+    // "Other" result. Callers (classifyForPreview / processTriagePipeline) own the
+    // degradation: they catch this, detect outage via isModelUnavailableError, and
+    // surface a `classifierUnavailable` state so a human can rescue the report.
+    throw error;
   }
 }
 
@@ -148,14 +148,23 @@ export async function classifyForPreview(report: {
   ward: number;
   zone: string;
   duplicateCandidate: { id: string; title: string; confirmedCount: number } | null;
+  classifierUnavailable: boolean;
 }> {
   let classification: TriageResult;
+  let classifierUnavailable = false;
   try {
+    // retryWithBackoff now actually retries (classifyMedia propagates failures),
+    // so a transient 503 gets 3 backed-off attempts before we degrade.
     classification = await retryWithBackoff(() => classifyMedia(report.description, report.mediaUrl));
   } catch (err) {
-    // Gemini fully unavailable: hand back the same safe low-confidence default
-    // classifyMedia would, so the preview still renders and the citizen can edit.
-    console.warn("classifyForPreview: Gemini unavailable, returning safe default suggestion.", err);
+    // Distinguish a Google-side outage (503/capacity) from any other failure so
+    // the UI can frame it as deliberate graceful degradation. Either way the
+    // preview still renders a safe default the citizen can edit/confirm.
+    classifierUnavailable = isModelUnavailableError(err);
+    console.warn(
+      `classifyForPreview: classification failed (classifierUnavailable=${classifierUnavailable}) — returning safe default for manual confirmation.`,
+      err
+    );
     classification = {
       category: "Other",
       severity: "MEDIUM",
@@ -189,6 +198,7 @@ export async function classifyForPreview(report: {
     ward: locationDetails.ward,
     zone: locationDetails.zone,
     duplicateCandidate,
+    classifierUnavailable,
   };
 }
 
@@ -210,7 +220,22 @@ export async function processTriagePipeline(report: {
     severity: TriageResult["severity"];
     title: string;
     confidence: number;
+    /**
+     * True when the citizen EXPLICITLY selected the category in the preview
+     * (vs passively accepting Setu's auto-guess). A human-confirmed real civic
+     * category rescues a failed/low-confidence classification through the gate
+     * — so a deliberate report posts publicly even if Gemini was completely down.
+     */
+    humanConfirmed?: boolean;
   };
+  /**
+   * Coarse, ward-level coordinates (the one-tap location fallback). When true we
+   * SKIP duplicate-merge: a shared ward centroid must not corroborate-merge
+   * unrelated reports that merely share an approximate point.
+   */
+  approxLocation?: boolean;
+  /** For the audit trace: Gemini was unavailable during preview classification. */
+  classifierUnavailable?: boolean;
 }): Promise<{ outcome: "VALIDATED" | "NEEDS_INFO" | "REJECTED" | "DUPLICATE"; issue: any }> {
   const reporterId = report.reporterId || "anonymous-citizen";
   const startTs = new Date().toISOString();
@@ -281,10 +306,18 @@ export async function processTriagePipeline(report: {
   const locationDetails = resolveWardAndZone(report.lat, report.lng);
   console.log(`Resolved geohash: ${geohash}, Ward: ${locationDetails.ward}, Zone: ${locationDetails.zone}`);
 
-  // 3. Duplicate check within same categories nearby
-  console.log("Step 3: Checking for duplicate parallel reports nearby...");
-  const existingDup = await dbService.findDuplicates(classification.category, report.lat, report.lng);
-  
+  // 3. Duplicate check within same categories nearby. SKIPPED for approximate
+  // (ward-level) coordinates — a coarse shared centroid would wrongly merge
+  // unrelated reports. Only precise GPS/EXIF/typed coords dedup.
+  const existingDup = report.approxLocation
+    ? null
+    : await dbService.findDuplicates(classification.category, report.lat, report.lng);
+  if (report.approxLocation) {
+    console.log("Step 3: Approximate (ward-level) location — skipping duplicate merge.");
+  } else {
+    console.log("Step 3: Checking for duplicate parallel reports nearby...");
+  }
+
   if (existingDup) {
     console.log(`[Duplicate Found] Strong spatial overlap with existing Dossier ${existingDup.id}. Corroborating instead.`);
     // Increment corroborated count on the existing duplicate
@@ -315,12 +348,25 @@ export async function processTriagePipeline(report: {
   let isPublic = true;
   let agentStatus = "Setu: Triage complete. Complaint queued for RMC dispatch.";
 
-  if (classification.confidence < 0.5) {
+  // Human-confirmed rescue: when the citizen EXPLICITLY picked a REAL civic
+  // category (not "Other"), treat that confirmation as high confidence so the
+  // gate validates it — even if Gemini returned a low-confidence guess or was
+  // completely unavailable. "Other" is never auto-rescued, so the spam/non-civic
+  // protection below stays intact for unconfirmed or junk reports.
+  const aiConfidence = classification.confidence;
+  const humanConfirmed = report.overrides?.humanConfirmed === true;
+  const humanRescued = humanConfirmed && classification.category !== "Other";
+  const effectiveConfidence = humanRescued ? Math.max(aiConfidence, 0.9) : aiConfidence;
+  if (humanRescued) {
+    console.log(`[Gate] Human-confirmed ${classification.category}: confidence ${aiConfidence} -> effective ${effectiveConfidence}.`);
+  }
+
+  if (effectiveConfidence < 0.5) {
     outcome = "NEEDS_INFO";
     status = "SUBMITTED"; // Map to SUBMITTED to keep compatible with UI schema
     isPublic = false;
     agentStatus = "Setu: Needs additional details. Private message sent.";
-  } else if (classification.category === "Other" && classification.confidence < 0.6) {
+  } else if (classification.category === "Other" && effectiveConfidence < 0.6) {
     // Non-civic or spam trigger
     outcome = "REJECTED";
     status = "SUBMITTED";
@@ -344,10 +390,13 @@ export async function processTriagePipeline(report: {
   // Generate unique dossier ID tracking path
   const dossierId = `Dossier #${Math.floor(1000 + Math.random() * 9000)}-${classification.category.substring(0, 1).toUpperCase()}`;
 
+  const classifyLine = report.classifierUnavailable && humanConfirmed
+    ? `classified manually · AI classifier unavailable (503)…… ${classification.category} · ${classification.severity}`
+    : `classifying media……………… ${classification.category} · ${classification.severity}`;
   const telemetryLines: Array<{ ts: string; glyph: string; kind: string; text: string }> = [
-    { ts: new Date(Date.now() - 3000).toISOString(), glyph: '›', kind: 'reasoning', text: `classifying media……………… ${classification.category} · ${classification.severity}` },
+    { ts: new Date(Date.now() - 3000).toISOString(), glyph: report.classifierUnavailable ? '⚠' : '›', kind: 'reasoning', text: classifyLine },
     { ts: new Date(Date.now() - 1500).toISOString(), glyph: '›', kind: 'tool', text: `locating………………………… Ward ${locationDetails.ward}, ${locationDetails.zone} Zone` },
-    { ts: new Date().toISOString(), glyph: '✓', kind: 'action', text: `triage decision………………… ${outcome} (confidence: ${classification.confidence.toFixed(2)})` }
+    { ts: new Date().toISOString(), glyph: '✓', kind: 'action', text: `triage decision………………… ${outcome} (confidence: ${effectiveConfidence.toFixed(2)})` }
   ];
   if (routing) {
     telemetryLines.push({ ts: new Date().toISOString(), glyph: '›', kind: 'tool', text: `routing…………………………… ${routing.departmentName}` });
@@ -360,7 +409,9 @@ export async function processTriagePipeline(report: {
     status,
     category: classification.category,
     severity: classification.severity,
-    confidence: classification.confidence,
+    confidence: effectiveConfidence,
+    aiConfidence,
+    humanConfirmed,
     title: classification.title,
     description: report.description,
     mediaUrl: report.mediaUrl || 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?auto=format&fit=crop&w=800&q=80',
