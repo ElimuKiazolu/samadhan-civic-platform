@@ -8,46 +8,101 @@ let useLocalFallback = false;
 
 const DB_FILE = path.join(process.cwd(), 'db.json');
 
-// Initialize Firebase Admin or Fallback
-let firebaseInitialized = false;
+// Bucket for Admin Storage. Kept in sync with storage.ts (same env var + default)
+// and passed explicitly into initializeApp so getStorage().bucket() resolves too.
+const STORAGE_BUCKET = process.env.FIREBASE_STORAGE_BUCKET || 'samadhan-ac08f.firebasestorage.app';
 
-// 1. Try environment variable
-if (!firebaseInitialized && process.env.FIREBASE_SERVICE_ACCOUNT) {
-  try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    initializeApp({
-      credential: cert(serviceAccount)
-    });
-    firestoreDb = getFirestore();
-    console.log('Firebase init: env var');
-    firebaseInitialized = true;
-  } catch (error) {
-    console.error('Failed to init Firebase via env var:', error);
+// ── Service-account loading (robust + diagnosable) ──────────────────────────
+//
+// Cloud Run failure mode this fixes: a service-account JSON pasted into an env
+// var gets its private_key "\n" newlines mangled (and `--set-env-vars` splits on
+// the JSON's commas), so cert() silently fails and we fell back to local JSON
+// with NO logged reason. We now: prefer a base64 transport (no comma/newline/
+// quote mangling), normalize escaped "\n", validate fields, and LOG the exact
+// reason for every failure/fallback — without ever logging the private key.
+
+/** Repair "\n" sequences mangled in env transport. Idempotent for real newlines. */
+function normalizeServiceAccount(sa: any): any {
+  if (sa && typeof sa.private_key === 'string') {
+    sa.private_key = sa.private_key.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
+  return sa;
 }
 
-// 2. Try serviceAccountKey.json file
-if (!firebaseInitialized) {
+/** Strip one layer of wrapping quotes some consoles add around the whole value. */
+function stripWrappingQuotes(s: string): string {
+  const t = s.trim();
+  if (t.length >= 2 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+/** Locate + parse the credential. Never throws; logs precise per-source errors. */
+function loadServiceAccount(): { source: string; json: any } | null {
+  // 1. Base64 env var — the robust transport (no comma/newline/quote mangling).
+  const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_B64;
+  if (b64 && b64.trim()) {
+    try {
+      return { source: 'env-b64', json: JSON.parse(Buffer.from(b64.trim(), 'base64').toString('utf8')) };
+    } catch (e: any) {
+      console.error('Firebase init: FIREBASE_SERVICE_ACCOUNT_B64 present but failed to decode/parse:', e?.name, e?.message);
+    }
+  }
+  // 2. Raw JSON env var (quote-trim; private_key "\n" repaired in normalize step).
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (raw && raw.trim()) {
+    try {
+      return { source: 'env-json', json: JSON.parse(stripWrappingQuotes(raw)) };
+    } catch (e: any) {
+      console.error('Firebase init: FIREBASE_SERVICE_ACCOUNT present but JSON.parse failed:', e?.name, e?.message);
+    }
+  }
+  // 3. Local-dev file (UNCHANGED path — must keep working locally).
   try {
     const serviceKeyPath = path.join(process.cwd(), 'serviceAccountKey.json');
     if (fs.existsSync(serviceKeyPath)) {
-      const serviceAccount = JSON.parse(fs.readFileSync(serviceKeyPath, 'utf8'));
-      initializeApp({
-        credential: cert(serviceAccount)
-      });
-      firestoreDb = getFirestore();
-      console.log('Firebase init: file');
-      firebaseInitialized = true;
+      return { source: 'file', json: JSON.parse(fs.readFileSync(serviceKeyPath, 'utf8')) };
     }
-  } catch (error) {
-    console.error('Failed to init Firebase via file:', error);
+  } catch (e: any) {
+    console.error('Firebase init: serviceAccountKey.json present but failed to read/parse:', e?.name, e?.message);
+  }
+  return null;
+}
+
+// ── Initialize Firebase Admin (fallback to local JSON ONLY on logged failure) ──
+let firebaseInitialized = false;
+let fallbackReason = 'no credential found (FIREBASE_SERVICE_ACCOUNT_B64 / FIREBASE_SERVICE_ACCOUNT / serviceAccountKey.json all absent)';
+
+const loaded = loadServiceAccount();
+if (loaded) {
+  const sa = normalizeServiceAccount(loaded.json);
+  const pk = typeof sa?.private_key === 'string' ? sa.private_key : '';
+  const missing = ['project_id', 'client_email', 'private_key'].filter((k) => !sa?.[k]);
+  // Non-sensitive shape diagnostics — booleans/ids/lengths only, NEVER the key.
+  console.log(
+    `Firebase init: source=${loaded.source} project_id=${sa?.project_id || 'MISSING'} ` +
+    `keyLooksPEM=${pk.startsWith('-----BEGIN')} keyHasNewlines=${pk.includes('\n')}` +
+    (missing.length ? ` missingFields=${missing.join(',')}` : '')
+  );
+  if (missing.length) {
+    fallbackReason = `service account missing fields: ${missing.join(',')}`;
+  } else {
+    try {
+      initializeApp({ credential: cert(sa), storageBucket: STORAGE_BUCKET });
+      firestoreDb = getFirestore();
+      firebaseInitialized = true;
+      console.log(`Firebase init: SUCCESS (source=${loaded.source}, storageBucket=${STORAGE_BUCKET})`);
+    } catch (e: any) {
+      fallbackReason = `cert()/initializeApp threw: ${e?.name}: ${e?.message}`;
+      console.error('Firebase init: cert()/initializeApp FAILED:', e?.name, e?.message);
+    }
   }
 }
 
-// 3. Fallback to local JSON fallback
 if (!firebaseInitialized) {
-  console.log('Firebase init: local JSON fallback');
   useLocalFallback = true;
+  console.error(`Firebase init: FALLING BACK to local JSON store (data + uploads are ephemeral). reason=${fallbackReason}`);
 }
 
 // The local JSON fallback starts EMPTY — the live feed shows only real reports

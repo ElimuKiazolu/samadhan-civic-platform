@@ -2,6 +2,7 @@ import { Type } from "@google/genai";
 import { dbService } from "./db";
 import { encodeGeohash, resolveWardAndZone } from "../lib/geohash";
 import { getGeminiClient, retryWithBackoff, hasGeminiKey, GEMINI_MODEL } from "./gemini";
+import { loadImagePart, type InlineImagePart } from "../lib/image";
 import { routeIssue, type IssueCategory } from "./routing";
 import { dispatchComplaint } from "./dispatch";
 
@@ -15,7 +16,20 @@ interface TriageResult {
 /**
  * Uses Gemini to classify a citizen's report
  */
-export async function classifyMedia(description: string, mediaUrl?: string, reasked = false): Promise<TriageResult> {
+export async function classifyMedia(
+  description: string,
+  mediaUrl?: string,
+  reasked = false,
+  preloadedImage?: InlineImagePart | null,
+): Promise<TriageResult> {
+  // VISION: fetch + downscale the photo into an inline image part so Setu can
+  // actually SEE it. Best-effort and never throws — null means classify on text
+  // alone (no photo, or fetch/downscale failed). Loaded once and reused on the
+  // malformed-JSON re-ask so we don't re-fetch. Cost guard: the raw mediaUrl is
+  // NEVER embedded in the text prompt; only downscaled bytes go as an image part.
+  const imagePart = preloadedImage !== undefined ? preloadedImage : await loadImagePart(mediaUrl);
+  const hasImage = !!imagePart;
+
   const prompt = `You are Setu, a professional municipal-complaints triage analyst for the Rajkot Municipal Corporation (RMC). Classify the citizen report into EXACTLY ONE category using these definitions. A clear civic problem must be placed in its specific category — do NOT default to "Other".
 
 CATEGORY DEFINITIONS (with examples):
@@ -33,7 +47,7 @@ CATEGORY DEFINITIONS (with examples):
 
 REPORT TO CLASSIFY:
 Report Text: "${description}"
-Report Media Context/URL: "${mediaUrl || 'No image attached'}"
+Image evidence: ${hasImage ? 'A photo is attached below — analyze it as the PRIMARY evidence and let it override the text if they disagree.' : 'No photo attached — classify from the text alone.'}
 
 Return strict JSON with exactly:
 1. category - one of: Roads/Potholes, Streetlights, Water, Garbage/Waste, Drainage/Sewage, Other.
@@ -49,9 +63,12 @@ Output valid strict JSON matching the requested schema.`;
       throw new Error("GEMINI_API_KEY missing");
     }
 
+    // Multimodal when we have a photo (text + downscaled image part); text-only otherwise.
+    const contents: any = hasImage ? [{ text: prompt }, imagePart] : prompt;
+
     const response = await ai.models.generateContent({
       model: GEMINI_MODEL,
-      contents: prompt,
+      contents,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -93,10 +110,11 @@ Output valid strict JSON matching the requested schema.`;
   } catch (error: any) {
     console.error("classifyMedia Error:", error);
 
-    // Re-ask once with stricter framing if malformed JSON and was not reasked yet
+    // Re-ask once with stricter framing if malformed JSON and was not reasked yet.
+    // Reuse the already-loaded image part so we don't re-fetch/re-downscale.
     if (!reasked && error instanceof SyntaxError) {
       console.log("Malformed JSON detected. Attempting re-ask once with strict prompt.");
-      return classifyMedia(description + " (Please output strictly valid raw JSON)", mediaUrl, true);
+      return classifyMedia(description + " (Please output strictly valid raw JSON)", mediaUrl, true, imagePart);
     }
 
     // Default safe fallback if all retries fail
