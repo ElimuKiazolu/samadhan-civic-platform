@@ -1,38 +1,78 @@
 import React from 'react';
 import { CivicIssue } from '../types';
-import { User, Award, CheckSquare, ListTodo, TrendingUp, HelpCircle } from 'lucide-react';
-import { motion } from 'motion/react';
+import { Award, CheckSquare, ListTodo, TrendingUp, HelpCircle, LogIn } from 'lucide-react';
 import { getStatusColors } from './IssueCard';
+import { useAuth } from '../context/AuthContext';
 
 interface YouProfileProps {
   userIssues: CivicIssue[];
   onSelectIssue: (issue: CivicIssue) => void;
+  onSignIn: () => void;
 }
 
-export const YouProfile: React.FC<YouProfileProps> = ({ userIssues, onSelectIssue }) => {
+export const YouProfile: React.FC<YouProfileProps> = ({ userIssues, onSelectIssue, onSignIn }) => {
+  const { user } = useAuth();
   const issuesList = userIssues || [];
+
+  // Signed-out state — an invitation, not a dead end (Doc 3 §7).
+  if (!user) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center text-center px-8 bg-paper space-y-4">
+        <div className="w-14 h-14 rounded-full bg-civic-tint border-2 border-civic flex items-center justify-center text-civic">
+          <LogIn className="w-6 h-6" />
+        </div>
+        <div className="space-y-1">
+          <h2 className="text-sm font-display font-black text-ink uppercase tracking-tight">Sign in to track your reports</h2>
+          <p className="text-[11px] text-ink-soft font-mono leading-relaxed max-w-[240px]">
+            Browsing is open to everyone. Sign in to file dossiers, confirm issues, and follow them to resolution.
+          </p>
+        </div>
+        <button
+          onClick={onSignIn}
+          className="bg-civic hover:bg-civic-deep text-white font-display font-black py-2.5 px-5 text-xs uppercase tracking-widest rounded-[8px] transition-colors"
+        >
+          Sign in
+        </button>
+      </div>
+    );
+  }
+
+  const displayName = user.displayName || (user.email ? user.email.split('@')[0] : 'Citizen');
+  const initial = (displayName || 'C').trim().charAt(0).toUpperCase();
   const reputationPoints = 120 + issuesList.length * 50;
-  const streak = 6; // mock active streak
+  const streak = 6; // mock — contribution streak not yet tracked server-side
 
   return (
     <div className="flex-1 flex flex-col bg-paper overflow-y-auto">
-      {/* Visual Identity Profile Frame */}
+      {/* Identity frame — real signed-in user */}
       <div className="bg-white px-5 py-6 border-b border-hairline shrink-0 space-y-4 shadow-sm">
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-full bg-civic-tint border-2 border-civic flex items-center justify-center text-civic text-xl font-bold font-display shadow-inner">
-            C
-          </div>
-          <div className="space-y-0.5">
-            <h2 className="text-md font-bold font-display tracking-tight text-ink uppercase">
-              Citizen #142 (You)
+          {user.photoURL ? (
+            <img
+              src={user.photoURL}
+              alt={displayName}
+              referrerPolicy="no-referrer"
+              className="w-14 h-14 rounded-full border-2 border-civic object-cover shadow-inner"
+            />
+          ) : (
+            <div className="w-14 h-14 rounded-full bg-civic-tint border-2 border-civic flex items-center justify-center text-civic text-xl font-bold font-display shadow-inner">
+              {initial}
+            </div>
+          )}
+          <div className="space-y-0.5 min-w-0">
+            <h2 className="text-md font-bold font-display tracking-tight text-ink truncate">
+              {displayName}
             </h2>
+            {user.email && (
+              <p className="text-[10px] font-mono text-ink-soft truncate max-w-[200px]">{user.email}</p>
+            )}
             <div className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-400">
               <span>Hyperlocal Sentinel League</span> · <span>Rajkot</span>
             </div>
           </div>
         </div>
 
-        {/* Reputation details bento grid */}
+        {/* Reputation bento grid (Reports is real; rep/streak are display-only for now) */}
         <div className="grid grid-cols-3 gap-3 pt-2">
           <div className="bg-zinc-50 border border-hairline p-2.5 rounded-[8px] text-center space-y-0.5">
             <Award className="w-4 h-4 text-civic mx-auto" />

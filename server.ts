@@ -11,6 +11,7 @@ import { decideSetuReply } from './src/services/decorum';
 import { runSentinel } from './src/services/sentinel';
 import { seedDemoBreachedIssue } from './src/services/seed';
 import { uploadIssueImage, UPLOADS_DIR } from './src/services/storage';
+import { requireAuth, requireRole, currentUser } from './src/services/auth';
 import {
   sanitizeDescription,
   sanitizeTitle,
@@ -78,6 +79,20 @@ app.get('/api/issues', async (req, res) => {
   }
 });
 
+// Bootstrap the signed-in user's profile (Doc 5 users/{uid}); citizen role is
+// assigned here on first sign-in. The authoritative role is always the token
+// claim — this doc just mirrors profile + role for queries.
+app.post('/api/me', requireAuth, async (req, res) => {
+  try {
+    const u = currentUser(req)!;
+    const profile = await dbService.upsertUser({ uid: u.uid, email: u.email });
+    res.json({ uid: u.uid, role: u.role, departmentId: u.departmentId ?? null, profile });
+  } catch (error: any) {
+    console.error('Error in POST /api/me:', error);
+    res.status(500).json({ error: 'Could not load your profile.' });
+  }
+});
+
 app.get('/api/issues/:id', async (req, res) => {
   try {
     const issue = await dbService.getIssueById(req.params.id);
@@ -92,9 +107,10 @@ app.get('/api/issues/:id', async (req, res) => {
 // Post a citizen comment to an issue's thread (persisted to the comments
 // subcollection per Doc 5). After persisting, the decorum gate (rule-based, NO
 // Gemini call) decides whether Setu adds a fact-only reply or stays silent.
-app.post('/api/issues/:id/comments', socialLimiter, async (req, res) => {
+app.post('/api/issues/:id/comments', socialLimiter, requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
+    const user = currentUser(req)!;
     const desc = sanitizeDescription(req.body.text);
     if (!desc.ok) {
       return res.status(400).json({ error: 'Comment text is required.' });
@@ -102,8 +118,10 @@ app.post('/api/issues/:id/comments', socialLimiter, async (req, res) => {
     const issue = await dbService.getIssueById(id);
     if (!issue) return res.status(404).json({ error: 'Dossier not found' });
 
+    const authorName = (user.email && user.email.split('@')[0]) || 'Citizen';
     const citizenComment = await dbService.addComment(id, {
-      author: sanitizeTitle(req.body.author) || 'You (Citizen)',
+      author: authorName,
+      authorId: user.uid,
       isAgent: false,
       text: desc.value,
     });
@@ -129,10 +147,10 @@ app.post('/api/issues/:id/comments', socialLimiter, async (req, res) => {
 
 // Corroborate an issue ("I see this too"). One-per-device via the client uid
 // (no auth yet); persisted to corroborations/{uid} with atomic count increment.
-app.post('/api/issues/:id/corroborate', socialLimiter, async (req, res) => {
+app.post('/api/issues/:id/corroborate', socialLimiter, requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
-    const uid = sanitizeTitle(req.body.reporterId) || 'citizen-demo';
+    const uid = currentUser(req)!.uid; // server-derived, un-spoofable; one per real user
     const result = await dbService.addCorroboration(id, uid);
     res.status(200).json({ ok: true, ...result });
   } catch (error: any) {
@@ -145,7 +163,7 @@ app.post('/api/issues/:id/corroborate', socialLimiter, async (req, res) => {
 // upload-vs-client rationale). Validates the file is genuinely an image by its
 // magic bytes (not the client-supplied Content-Type), re-checks the size cap,
 // extracts any EXIF GPS as a location bonus, and returns a renderable URL.
-app.post('/api/upload', writeLimiter, (req, res) => {
+app.post('/api/upload', writeLimiter, requireAuth, (req, res) => {
   upload.single('photo')(req, res, async (err: any) => {
     try {
       if (err) {
@@ -196,7 +214,7 @@ app.post('/api/upload', writeLimiter, (req, res) => {
 // Read-only classification for the preview step. Runs Gemini (full retry/re-ask/
 // safe-default ladder) + ward/zone resolution + a NON-mutating duplicate lookup.
 // Writes nothing — the citizen reviews/edits before any persistence happens.
-app.post('/api/classify-preview', writeLimiter, async (req, res) => {
+app.post('/api/classify-preview', writeLimiter, requireAuth, async (req, res) => {
   try {
     const desc = sanitizeDescription(req.body.description);
     if (!desc.ok) {
@@ -218,15 +236,19 @@ app.post('/api/classify-preview', writeLimiter, async (req, res) => {
   }
 });
 
-app.post('/api/report', writeLimiter, async (req, res) => {
+app.post('/api/report', writeLimiter, requireAuth, async (req, res) => {
   try {
+    const user = currentUser(req)!;
     const desc = sanitizeDescription(req.body.description ?? req.body.title);
     if (!desc.ok) {
       return res.status(400).json({ error: desc.error });
     }
     const description = desc.value;
     const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl : '';
-    const reporterId = sanitizeTitle(req.body.reporterId) || 'citizen-demo';
+    // Reporter identity is the VERIFIED uid (un-spoofable), not client-supplied.
+    const reporterId = user.uid;
+    // Ensure the user profile exists (Doc 5 users/{uid}); non-fatal if it fails.
+    dbService.upsertUser({ uid: user.uid, email: user.email }).catch(() => {});
 
     // Coordinates: the new flow always supplies them (GPS/EXIF/manual). Fall back
     // to the legacy ward-string → centroid map only if they're missing/invalid,
@@ -304,7 +326,7 @@ app.post('/api/report', writeLimiter, async (req, res) => {
 // Demo seeder (Doc 4 §6.5 demo support). Plants ONE breached Roads/Potholes case
 // into the ACTIVE store (Firestore OR local) so the sentinel escalation can be shown
 // live on the deployed app. Idempotent on a fixed id — re-arms an existing case.
-app.post('/api/seed-demo', async (req, res) => {
+app.post('/api/seed-demo', requireAuth, requireRole('authority'), async (req, res) => {
   try {
     const { created, issue } = await seedDemoBreachedIssue();
     res.status(created ? 201 : 200).json({
@@ -324,7 +346,7 @@ app.post('/api/seed-demo', async (req, res) => {
 
 // Autonomous SLA sentinel (Doc 4 §6.5). Manual trigger for the demo + the target
 // Cloud Scheduler/interval hits. Returns the sweep result so the UI can show it.
-app.post('/api/sentinel', async (req, res) => {
+app.post('/api/sentinel', requireAuth, requireRole('authority'), async (req, res) => {
   try {
     const result = await runSentinel();
     res.json({ ok: true, ...result });
@@ -349,7 +371,14 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
    const distPath = __dirname;  // const distPath = path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        // SW must not be cached by the browser, or updates won't propagate.
+        if (filePath.endsWith('sw.js')) res.setHeader('Cache-Control', 'no-cache');
+        // Correct MIME for the web manifest under express.static.
+        if (filePath.endsWith('.webmanifest')) res.setHeader('Content-Type', 'application/manifest+json');
+      },
+    }));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

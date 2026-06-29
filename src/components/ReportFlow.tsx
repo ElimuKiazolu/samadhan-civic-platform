@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { CivicIssue } from '../types';
 import { X, MapPin, Check, Loader2, Sparkles, AlertTriangle, Crosshair, ImagePlus, ServerOff, LocateFixed } from 'lucide-react';
 import { motion } from 'motion/react';
+import { useAuth } from '../context/AuthContext';
 
 export interface ReportResult {
   outcome: 'VALIDATED' | 'NEEDS_INFO' | 'REJECTED' | 'DUPLICATE';
@@ -49,6 +50,7 @@ type GpsStatus = 'idle' | 'requesting' | 'granted' | 'denied' | 'unavailable';
 type LocationSource = 'gps' | 'exif' | 'manual' | 'ward' | null;
 
 export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => {
+  const { authedFetch } = useAuth();
   const [step, setStep] = useState<'compose' | 'analyzing' | 'preview' | 'posting' | 'result'>('compose');
 
   // Compose inputs
@@ -147,7 +149,7 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
       try {
         const form = new FormData();
         form.append('photo', file);
-        const res = await fetch('/api/upload', { method: 'POST', body: form });
+        const res = await authedFetch('/api/upload', { method: 'POST', body: form });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.mediaUrl) {
           uploadedUrl = data.mediaUrl;
@@ -170,7 +172,7 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
 
     // 3. Read-only classification for the preview.
     try {
-      const res = await fetch('/api/classify-preview', {
+      const res = await authedFetch('/api/classify-preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -230,7 +232,7 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
     const hasCoords = Number.isFinite(latNum) && Number.isFinite(lngNum);
 
     try {
-      const res = await fetch('/api/report', {
+      const res = await authedFetch('/api/report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

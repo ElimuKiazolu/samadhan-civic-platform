@@ -360,6 +360,7 @@ export const dbService = {
     const cleanComment = {
       id: comment.id || `c-${Date.now()}`,
       author: comment.author || 'Anonymous',
+      authorId: comment.authorId || null,
       isAgent: !!comment.isAgent,
       text: comment.text || '',
       time: comment.time || 'Just now',
@@ -447,6 +448,82 @@ export const dbService = {
     issue.updatedAt = new Date().toISOString();
     writeLocalDb(local);
     return { added: true, count: nextCount };
+  },
+
+  /**
+   * Create-or-update a user profile (Doc 5 users/{uid}). On first sign-in the
+   * citizen role is assigned here; on subsequent calls we only refresh profile
+   * fields and NEVER overwrite role (authoritative role lives in the token claim,
+   * mirrored here by the admin claim script). Idempotent.
+   */
+  async upsertUser(profile: { uid: string; displayName?: string; email?: string }): Promise<any> {
+    const uid = profile.uid;
+    if (!uid) return null;
+    const patch = {
+      displayName: profile.displayName || '',
+      email: profile.email || '',
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (!useLocalFallback && firestoreDb) {
+      try {
+        const ref = firestoreDb.collection('users').doc(uid);
+        const snap = await ref.get();
+        if (!snap.exists) {
+          const fresh = { uid, role: 'citizen', createdAt: new Date().toISOString(), ...patch };
+          await ref.set(fresh);
+          return fresh;
+        }
+        await ref.set(patch, { merge: true }); // never touches role
+        return { uid, ...snap.data(), ...patch };
+      } catch (error) {
+        console.error(`Firestore upsertUser ${uid} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
+      }
+    }
+
+    const local = readLocalDb();
+    local.users = local.users || {};
+    const existing = local.users[uid];
+    local.users[uid] = existing
+      ? { ...existing, ...patch }
+      : { uid, role: 'citizen', createdAt: new Date().toISOString(), ...patch };
+    writeLocalDb(local);
+    return local.users[uid];
+  },
+
+  async getUser(uid: string): Promise<any | null> {
+    if (!useLocalFallback && firestoreDb) {
+      try {
+        const snap = await firestoreDb.collection('users').doc(uid).get();
+        return snap.exists ? { uid, ...snap.data() } : null;
+      } catch (error) {
+        console.error(`Firestore getUser ${uid} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
+      }
+    }
+    const local = readLocalDb();
+    return (local.users && local.users[uid]) || null;
+  },
+
+  /** Mirror an authority grant into the user doc (called by the admin claim script). */
+  async setUserRole(uid: string, role: 'citizen' | 'authority', departmentId?: string): Promise<void> {
+    const patch: any = { role, updatedAt: new Date().toISOString() };
+    if (departmentId !== undefined) patch.departmentId = departmentId;
+
+    if (!useLocalFallback && firestoreDb) {
+      try {
+        await firestoreDb.collection('users').doc(uid).set(patch, { merge: true });
+        return;
+      } catch (error) {
+        console.error(`Firestore setUserRole ${uid} failed, switching permanently to local JSON fallback:`, error);
+        useLocalFallback = true;
+      }
+    }
+    const local = readLocalDb();
+    local.users = local.users || {};
+    local.users[uid] = { ...(local.users[uid] || { uid, createdAt: new Date().toISOString() }), ...patch };
+    writeLocalDb(local);
   },
 
   async addCaseLog(issueId: string, entry: any): Promise<any> {

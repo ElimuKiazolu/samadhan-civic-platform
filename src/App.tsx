@@ -6,8 +6,11 @@ import { ReportFlow, ReportResult } from './components/ReportFlow';
 import { AuthorityDashboard } from './components/AuthorityDashboard';
 import { AlertsView } from './components/AlertsView';
 import { YouProfile } from './components/YouProfile';
+import { ImpactDashboard } from './components/ImpactDashboard';
+import { SignInScreen } from './components/SignInScreen';
+import { useAuth } from './context/AuthContext';
 import { deriveAlerts } from './lib/alerts';
-import { Radio, Users, Bell, User, Plus, ShieldAlert, SlidersHorizontal, MapPin, Eye, CheckCircle2 } from 'lucide-react';
+import { Radio, Users, Bell, User, Plus, ShieldAlert, SlidersHorizontal, MapPin, Eye, CheckCircle2, BarChart3, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Derive a human "age" label from an ISO createdAt timestamp. Real issues from
@@ -35,20 +38,6 @@ function hydrateIssue(issue: any): CivicIssue {
   };
 }
 
-// Stable anonymous per-device id (no auth yet) → "one corroboration per device".
-function getDeviceUid(): string {
-  try {
-    let id = localStorage.getItem('samadhan_uid');
-    if (!id) {
-      id = `cit-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
-      localStorage.setItem('samadhan_uid', id);
-    }
-    return id;
-  } catch {
-    return 'citizen-demo';
-  }
-}
-
 // Read-alert ids persist in localStorage so the bell's unread dot survives refresh.
 const READ_ALERTS_KEY = 'samadhan_read_alerts';
 function loadReadAlertIds(): Set<string> {
@@ -64,17 +53,35 @@ export default function App() {
   // truth). No bundled mock data — only real Firestore/local reports appear.
   const [issues, setIssues] = useState<CivicIssue[]>([]);
   const [selectedIssue, setSelectedIssue] = useState<CivicIssue | null>(null);
-  const [activeTab, setActiveTab] = useState<'feed' | 'alerts' | 'you'>('feed');
+  const [activeTab, setActiveTab] = useState<'feed' | 'impact' | 'alerts' | 'you' | 'authority'>('feed');
   const [isReporting, setIsReporting] = useState(false);
-  const [role, setRole] = useState<'citizen' | 'authority'>('citizen');
-  
-  // Local reported list tracker to populate in "You" tab dynamically
-  const [reportedIds, setReportedIds] = useState<string[]>([]);
+
+  // Role + identity come from VERIFIED Firebase claims (no self-assign switcher).
+  const { user, role, departmentId, authedFetch, signOut } = useAuth();
+
   const [selectedWard, setSelectedWard] = useState<string>('All Wards');
 
-  // Stable device id for one-per-device corroboration; alert read-state (localStorage).
-  const deviceUid = useMemo(getDeviceUid, []);
+  // Sign-in prompt (Doc 2 CJ-1: browse read-only → tap an action → prompted to sign in).
+  const [showSignIn, setShowSignIn] = useState(false);
+  const [signInReason, setSignInReason] = useState<string>('');
+  const requireAuthThen = (action: () => void, reason: string) => {
+    if (user) action();
+    else { setSignInReason(reason); setShowSignIn(true); }
+  };
+
+  // Alert read-state (localStorage).
   const [readAlertIds, setReadAlertIds] = useState<Set<string>>(() => loadReadAlertIds());
+
+  // Bootstrap the user profile (Doc 5 users/{uid}) once per sign-in.
+  useEffect(() => {
+    if (user) authedFetch('/api/me', { method: 'POST' }).catch(() => {});
+  }, [user, authedFetch]);
+
+  // If a non-authority lands on the Authority tab (e.g. after sign-out), fall
+  // back to the feed so the body is never blank. (Server role-gating is unchanged.)
+  useEffect(() => {
+    if (activeTab === 'authority' && role !== 'authority') setActiveTab('feed');
+  }, [role, activeTab]);
 
   // Real alerts derived from live issue events (no mock data).
   const alerts = useMemo(() => deriveAlerts(issues), [issues]);
@@ -152,9 +159,10 @@ export default function App() {
     refetchDetail(issue.id);
   };
 
-  // Corroboration now PERSISTS (one-per-device via deviceUid). Optimistic, then
-  // reconciled to the authoritative server count.
+  // Corroboration PERSISTS, one-per-real-user (server derives uid from the token).
+  // Optimistic, then reconciled to the authoritative server count.
   const handleCorroborate = async (issueId: string) => {
+    if (!user) { setSignInReason('Sign in to confirm you see this issue too.'); setShowSignIn(true); return; }
     setIssues((prev) =>
       prev.map((issue) =>
         issue.id === issueId
@@ -163,11 +171,7 @@ export default function App() {
       )
     );
     try {
-      const res = await fetch(`/api/issues/${issueId}/corroborate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reporterId: deviceUid }),
-      });
+      const res = await authedFetch(`/api/issues/${issueId}/corroborate`, { method: 'POST' });
       if (!res.ok) return;
       const data = await res.json();
       if (typeof data.count === 'number') {
@@ -185,9 +189,8 @@ export default function App() {
   const handleReportPosted = (result: ReportResult) => {
     const issue = result?.issue;
     if (issue?.id) {
-      setReportedIds((prev) => (prev.includes(issue.id) ? prev : [...prev, issue.id]));
       // Public outcomes appear in the feed immediately; private ones (NEEDS_INFO/
-      // REJECTED) stay off the public feed but remain in "You".
+      // REJECTED) stay off the public feed but remain in "You" (filtered by uid).
       if (issue.isPublic !== false) {
         setIssues((prev) => {
           const hydrated = hydrateIssue(issue);
@@ -256,8 +259,10 @@ export default function App() {
     );
   };
 
-  // Filter issues for "You" tab
-  const userCreatedIssues = issues.filter((i) => reportedIds.includes(i.id));
+  // "You" tab — the signed-in user's own reports, by verified uid.
+  const userCreatedIssues = user
+    ? issues.filter((i) => (i as any).reporterId === user.uid)
+    : [];
 
   // Ward specific filter for citizen feed
   const filteredCitizenIssues = issues.filter((issue) => {
@@ -269,53 +274,45 @@ export default function App() {
     <div className="w-full h-screen bg-paper flex justify-center overflow-hidden">
       {/* Main Single Column Container */}
       <div className="w-full max-w-[430px] h-screen bg-white relative flex flex-col md:shadow-[0_0_24px_rgba(22,24,29,0.06)] md:border-x md:border-hairline overflow-hidden">
-        {/* Absolute role switcher container (Floating at page top, constrained within max-width area) */}
-        <div className="absolute top-3 left-3 right-3 flex justify-between items-center bg-zinc-950 border border-zinc-800 p-2.5 rounded-xl text-xs z-50 shadow-md">
-          <span className="text-zinc-400 font-mono text-[10px] uppercase font-bold tracking-wider">
-            Samadhan Engine Switch
-          </span>
-          <div className="flex gap-1.5 bg-zinc-900 p-1 rounded-lg border border-zinc-800">
-            <button
-              onClick={() => {
-                setRole('citizen');
-                setActiveTab('feed');
-              }}
-              className={`px-3 py-1.5 rounded-md font-mono font-bold uppercase text-[9px] tracking-wider transition-all flex items-center gap-1 ${
-                role === 'citizen' ? 'bg-civic text-white' : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              <Users className="w-3 h-3" /> Citizen
-            </button>
-            <button
-              onClick={() => {
-                setRole('authority');
-                setActiveTab('feed'); // resets view
-              }}
-              className={`px-3 py-1.5 rounded-md font-mono font-bold uppercase text-[9px] tracking-wider transition-all flex items-center gap-1 ${
-                role === 'authority' ? 'bg-st-stalled text-white' : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              <ShieldAlert className="w-3 h-3" /> Authority
-            </button>
-          </div>
-        </div>
-
-        {/* Brand App Header */}
-        <header className="pt-[72px] px-6 pb-2.5 border-b border-hairline flex justify-between items-baseline shrink-0 bg-white">
+        {/* Brand App Header + auth chip (role is verified, never self-assigned) */}
+        <header className="pt-5 px-6 pb-2.5 border-b border-hairline flex justify-between items-center shrink-0 bg-white">
           <h1 className="text-xl font-display font-black tracking-tighter text-ink uppercase">
             Samadhan
           </h1>
-          <span className="text-[9px] font-mono font-semibold text-ink-soft tracking-wider uppercase">
-            Dossiers #IN-RG-12
-          </span>
+          {user ? (
+            <div className="flex items-center gap-2">
+              {role === 'authority' && (
+                <span className="bg-st-stalled text-white text-[8px] font-mono font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-[3px] flex items-center gap-1">
+                  <ShieldAlert className="w-2.5 h-2.5" /> Authority{departmentId ? ` · ${departmentId}` : ''}
+                </span>
+              )}
+              <span className="text-[10px] font-mono text-ink-soft truncate max-w-[88px]" title={user.email || ''}>
+                {(user.email && user.email.split('@')[0]) || 'Citizen'}
+              </span>
+              <button
+                onClick={() => signOut()}
+                title="Sign out"
+                className="p-1 rounded-full hover:bg-zinc-100 text-ink-soft"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => { setSignInReason(''); setShowSignIn(true); }}
+              className="bg-civic hover:bg-civic-deep text-white text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1.5 rounded-[6px] transition-colors"
+            >
+              Sign in
+            </button>
+          )}
         </header>
 
         {/* Scrollable/Interactive Internal View Body */}
         <div className="flex-1 flex flex-col overflow-hidden bg-paper pb-20 relative">
           
-          {role === 'citizen' ? (
-            // Citizen view states
-            <>
+          {/* Citizen experience is available to EVERYONE (incl. authority). The
+              Authority queue is an EXTRA view, never a replacement. */}
+          <>
               {activeTab === 'feed' && (
                 <div className="flex-1 flex flex-col min-h-0 bg-paper">
                   {/* Location Switch / Filter */}
@@ -357,27 +354,31 @@ export default function App() {
                 </div>
               )}
 
+              {activeTab === 'impact' && <ImpactDashboard issues={issues} />}
+
               {activeTab === 'alerts' && <AlertsView alerts={alerts} readIds={readAlertIds} />}
 
               {activeTab === 'you' && (
                 <YouProfile
                   userIssues={userCreatedIssues}
                   onSelectIssue={selectIssue}
+                  onSignIn={() => { setSignInReason('Sign in to see your reports.'); setShowSignIn(true); }}
                 />
               )}
-            </>
-          ) : (
-            // Authority view states
-            <AuthorityDashboard
-              issues={issues}
-              onUpdateStatus={handleUpdateStatus}
-              onRefresh={refreshIssues}
-            />
-          )}
 
-          {/* Citizen view navigation bar */}
-          {role === 'citizen' && (
-            <nav className="absolute bottom-0 left-0 right-0 h-[64px] bg-white border-t border-hairline flex justify-around items-center px-4 pb-2 z-30 select-none shadow-[0_-2px_12px_rgba(22,24,29,0.03)]">
+              {/* Authority queue — EXTRA view, only reachable by a verified authority. */}
+              {activeTab === 'authority' && role === 'authority' && (
+                <AuthorityDashboard
+                  issues={issues}
+                  onUpdateStatus={handleUpdateStatus}
+                  onRefresh={refreshIssues}
+                />
+              )}
+          </>
+
+          {/* Bottom navigation — shown for everyone (citizen experience). The
+              Authority tab is appended only for verified authority users. */}
+          <nav className="absolute bottom-0 left-0 right-0 h-[64px] bg-white border-t border-hairline flex justify-around items-center px-4 pb-2 z-30 select-none shadow-[0_-2px_12px_rgba(22,24,29,0.03)]">
               <button
                 onClick={() => setActiveTab('feed')}
                 className={`flex flex-col items-center gap-1 transition-all ${
@@ -388,9 +389,19 @@ export default function App() {
                 <span className="text-[10px] font-mono uppercase tracking-tight">Feed</span>
               </button>
 
-              {/* Centered Emphasized Report Button */}
               <button
-                onClick={() => setIsReporting(true)}
+                onClick={() => setActiveTab('impact')}
+                className={`flex flex-col items-center gap-1 transition-all ${
+                  activeTab === 'impact' ? 'text-civic font-black scale-105' : 'text-zinc-400'
+                }`}
+              >
+                <BarChart3 className="w-5 h-5" />
+                <span className="text-[10px] font-mono uppercase tracking-tight">Impact</span>
+              </button>
+
+              {/* Centered Emphasized Report Button (gated — sign in to report) */}
+              <button
+                onClick={() => requireAuthThen(() => setIsReporting(true), 'Sign in to report a civic issue.')}
                 className="w-11 h-11 bg-ink hover:bg-zinc-800 text-white rounded-full flex items-center justify-center shadow-lg -mt-6 border-4 border-white transition-all transform hover:scale-105 active:scale-95"
               >
                 <Plus className="w-6 h-6" />
@@ -422,8 +433,20 @@ export default function App() {
                 <User className="w-5 h-5" />
                 <span className="text-[10px] font-mono uppercase tracking-tight">You</span>
               </button>
+
+              {/* Authority queue tab — ONLY for verified authority users. */}
+              {role === 'authority' && (
+                <button
+                  onClick={() => setActiveTab('authority')}
+                  className={`flex flex-col items-center gap-1 transition-all ${
+                    activeTab === 'authority' ? 'text-st-stalled font-black scale-105' : 'text-zinc-400'
+                  }`}
+                >
+                  <ShieldAlert className="w-5 h-5" />
+                  <span className="text-[10px] font-mono uppercase tracking-tight">Queue</span>
+                </button>
+              )}
             </nav>
-          )}
 
         </div>
 
@@ -442,6 +465,14 @@ export default function App() {
               onClose={() => setSelectedIssue(null)}
               onCorroborate={handleCorroborate}
               onRefreshDetail={refetchDetail}
+              onRequireAuth={(reason) => { setSignInReason(reason); setShowSignIn(true); }}
+            />
+          )}
+
+          {showSignIn && (
+            <SignInScreen
+              onClose={() => setShowSignIn(false)}
+              reason={signInReason}
             />
           )}
         </AnimatePresence>
