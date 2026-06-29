@@ -53,7 +53,7 @@ export default function App() {
   // truth). No bundled mock data — only real Firestore/local reports appear.
   const [issues, setIssues] = useState<CivicIssue[]>([]);
   const [selectedIssue, setSelectedIssue] = useState<CivicIssue | null>(null);
-  const [activeTab, setActiveTab] = useState<'feed' | 'impact' | 'alerts' | 'you'>('feed');
+  const [activeTab, setActiveTab] = useState<'feed' | 'impact' | 'alerts' | 'you' | 'authority'>('feed');
   const [isReporting, setIsReporting] = useState(false);
 
   // Role + identity come from VERIFIED Firebase claims (no self-assign switcher).
@@ -76,6 +76,12 @@ export default function App() {
   useEffect(() => {
     if (user) authedFetch('/api/me', { method: 'POST' }).catch(() => {});
   }, [user, authedFetch]);
+
+  // If a non-authority lands on the Authority tab (e.g. after sign-out), fall
+  // back to the feed so the body is never blank. (Server role-gating is unchanged.)
+  useEffect(() => {
+    if (activeTab === 'authority' && role !== 'authority') setActiveTab('feed');
+  }, [role, activeTab]);
 
   // Real alerts derived from live issue events (no mock data).
   const alerts = useMemo(() => deriveAlerts(issues), [issues]);
@@ -304,9 +310,9 @@ export default function App() {
         {/* Scrollable/Interactive Internal View Body */}
         <div className="flex-1 flex flex-col overflow-hidden bg-paper pb-20 relative">
           
-          {role === 'citizen' ? (
-            // Citizen view states
-            <>
+          {/* Citizen experience is available to EVERYONE (incl. authority). The
+              Authority queue is an EXTRA view, never a replacement. */}
+          <>
               {activeTab === 'feed' && (
                 <div className="flex-1 flex flex-col min-h-0 bg-paper">
                   {/* Location Switch / Filter */}
@@ -359,19 +365,20 @@ export default function App() {
                   onSignIn={() => { setSignInReason('Sign in to see your reports.'); setShowSignIn(true); }}
                 />
               )}
-            </>
-          ) : (
-            // Authority view states
-            <AuthorityDashboard
-              issues={issues}
-              onUpdateStatus={handleUpdateStatus}
-              onRefresh={refreshIssues}
-            />
-          )}
 
-          {/* Citizen view navigation bar */}
-          {role === 'citizen' && (
-            <nav className="absolute bottom-0 left-0 right-0 h-[64px] bg-white border-t border-hairline flex justify-around items-center px-4 pb-2 z-30 select-none shadow-[0_-2px_12px_rgba(22,24,29,0.03)]">
+              {/* Authority queue — EXTRA view, only reachable by a verified authority. */}
+              {activeTab === 'authority' && role === 'authority' && (
+                <AuthorityDashboard
+                  issues={issues}
+                  onUpdateStatus={handleUpdateStatus}
+                  onRefresh={refreshIssues}
+                />
+              )}
+          </>
+
+          {/* Bottom navigation — shown for everyone (citizen experience). The
+              Authority tab is appended only for verified authority users. */}
+          <nav className="absolute bottom-0 left-0 right-0 h-[64px] bg-white border-t border-hairline flex justify-around items-center px-4 pb-2 z-30 select-none shadow-[0_-2px_12px_rgba(22,24,29,0.03)]">
               <button
                 onClick={() => setActiveTab('feed')}
                 className={`flex flex-col items-center gap-1 transition-all ${
@@ -426,8 +433,20 @@ export default function App() {
                 <User className="w-5 h-5" />
                 <span className="text-[10px] font-mono uppercase tracking-tight">You</span>
               </button>
+
+              {/* Authority queue tab — ONLY for verified authority users. */}
+              {role === 'authority' && (
+                <button
+                  onClick={() => setActiveTab('authority')}
+                  className={`flex flex-col items-center gap-1 transition-all ${
+                    activeTab === 'authority' ? 'text-st-stalled font-black scale-105' : 'text-zinc-400'
+                  }`}
+                >
+                  <ShieldAlert className="w-5 h-5" />
+                  <span className="text-[10px] font-mono uppercase tracking-tight">Queue</span>
+                </button>
+              )}
             </nav>
-          )}
 
         </div>
 
