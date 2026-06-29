@@ -371,7 +371,14 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
    const distPath = __dirname;  // const distPath = path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        // SW must not be cached by the browser, or updates won't propagate.
+        if (filePath.endsWith('sw.js')) res.setHeader('Cache-Control', 'no-cache');
+        // Correct MIME for the web manifest under express.static.
+        if (filePath.endsWith('.webmanifest')) res.setHeader('Content-Type', 'application/manifest+json');
+      },
+    }));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

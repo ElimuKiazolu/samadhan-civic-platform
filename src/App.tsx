@@ -356,6 +356,7 @@ export default function App() {
                 <YouProfile
                   userIssues={userCreatedIssues}
                   onSelectIssue={selectIssue}
+                  onSignIn={() => { setSignInReason('Sign in to see your reports.'); setShowSignIn(true); }}
                 />
               )}
             </>
