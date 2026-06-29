@@ -3,6 +3,7 @@ import { CivicIssue } from '../types';
 import { ShieldAlert, CheckCircle2, Clock, MapPin, Loader2, UploadCloud, Check, Siren, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getStatusColors } from './IssueCard';
+import { useAuth } from '../context/AuthContext';
 
 interface AuthorityDashboardProps {
   issues: CivicIssue[];
@@ -18,6 +19,7 @@ const MOCK_PROOF_IMAGES = [
 ];
 
 export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, onUpdateStatus, onRefresh }) => {
+  const { authedFetch } = useAuth();
   const [filter, setFilter] = useState<'ALL' | 'VALIDATED' | 'IN_PROGRESS' | 'SLA_BREACH'>('ALL');
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
   const [proofMediaIndex, setProofMediaIndex] = useState<number | null>(null);
@@ -32,7 +34,7 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
     setSweepState('running');
     setSweepMsg('Setu scanning SLA windows…');
     try {
-      const res = await fetch('/api/sentinel', { method: 'POST' });
+      const res = await authedFetch('/api/sentinel', { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (!data || data.ok === false) throw new Error('Sweep rejected');

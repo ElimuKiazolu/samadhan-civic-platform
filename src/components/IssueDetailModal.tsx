@@ -3,6 +3,7 @@ import { CivicIssue, Comment, CaseLogLine } from '../types';
 import { X, Map, Users, Send, Check, AlertTriangle, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getStatusColors } from './IssueCard';
+import { useAuth } from '../context/AuthContext';
 
 interface IssueDetailModalProps {
   issue: CivicIssue;
@@ -11,6 +12,8 @@ interface IssueDetailModalProps {
   /** Re-fetch the full dossier (/api/issues/:id) so persisted comments + any
    *  decorum-gated Setu reply render from the server. */
   onRefreshDetail: (issueId: string) => void | Promise<void>;
+  /** Open the sign-in prompt when a logged-out user taps a gated action. */
+  onRequireAuth: (reason: string) => void;
 }
 
 export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
@@ -18,7 +21,9 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   onClose,
   onCorroborate,
   onRefreshDetail,
+  onRequireAuth,
 }) => {
+  const { user, authedFetch } = useAuth();
   const [isCaseLogOpen, setIsCaseLogOpen] = useState(true);
   const [commentText, setCommentText] = useState('');
   const [sending, setSending] = useState(false);
@@ -50,27 +55,28 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   }, [visibleLinesCount, isStreaming, isCaseLogOpen, issue.caseLog]);
 
   const handleCorroborateClick = () => {
-    if (!corroborated) {
-      setCorroborated(true);
-      setLocalConfirmedCount((prev) => prev + 1);
-      onCorroborate(issue.id);
-    }
+    if (corroborated) return;
+    if (!user) { onRequireAuth('Sign in to confirm you see this issue too.'); return; }
+    setCorroborated(true);
+    setLocalConfirmedCount((prev) => prev + 1);
+    onCorroborate(issue.id);
   };
 
   const handleSendComment = async (e: React.FormEvent) => {
     e.preventDefault();
     const text = commentText.trim();
     if (!text || sending) return;
+    if (!user) { onRequireAuth('Sign in to add to the civic record.'); return; }
 
     setSending(true);
     setCommentText('');
     try {
       // Persist to the comments subcollection. The server applies Setu's
       // rule-based decorum gate (reply only when value-adding; never fabricates).
-      const res = await fetch(`/api/issues/${issue.id}/comments`, {
+      const res = await authedFetch(`/api/issues/${issue.id}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, author: 'You (Citizen)' }),
+        body: JSON.stringify({ text }),
       });
       if (!res.ok) throw new Error('comment failed');
       // Reload the full dossier so the persisted comment (+ any Setu reply) show.

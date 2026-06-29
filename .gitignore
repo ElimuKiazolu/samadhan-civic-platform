@@ -6,10 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
-.env.example
 CLAUDE.md
 doc/
-scripts/
+scripts/spike/
 serviceAccountKey.json
 db.json
 uploads/
