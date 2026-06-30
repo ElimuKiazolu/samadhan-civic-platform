@@ -5,7 +5,7 @@
 Built for the **Google AI Studio Agentic Hackathon** (Community Hero: Hyperlocal Problem Solver).
 
 🔗 **Live:** https://samadhan-536916009392.asia-south1.run.app
-📄 **Submission write-up:** [link to your Google Doc]
+📄 **Submission write-up:** https://docs.google.com/document/d/1P5vlJs_xWpOQESD4zIqIqRYAhUnCSfJnqdQzuEM4y2k/edit?usp=sharing
 
 > **Best viewed on a phone** (or desktop browser in mobile/device mode). Samadhan is mobile-first by design — civic reporting is a phone-first act, so the app targets a ~390px viewport and renders as a centered phone-width column on desktop. It's also an installable PWA.
 
