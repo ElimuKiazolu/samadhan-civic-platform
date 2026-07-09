@@ -6,6 +6,7 @@ import rateLimit from 'express-rate-limit';
 import exifr from 'exifr';
 // import { fileURLToPath } from 'url';
 import { dbService } from './src/services/db';
+import { resolveWardAndZone } from './src/lib/geohash';
 import { processTriagePipeline, classifyForPreview } from './src/services/triage';
 import { decideSetuReply } from './src/services/decorum';
 import { runSentinel } from './src/services/sentinel';
@@ -16,11 +17,13 @@ import {
   sanitizeDescription,
   sanitizeTitle,
   validateCoords,
-  sniffImageMime,
+  sniffMediaMime,
   normalizeCategory,
   normalizeSeverity,
+  normalizeMediaType,
   clampConfidence,
   MAX_IMAGE_BYTES,
+  MAX_VIDEO_BYTES,
 } from './src/lib/validation';
 
 // const __filename = fileURLToPath(import.meta.url);
@@ -57,11 +60,14 @@ const socialLimiter = rateLimit({
   message: { error: 'Too many actions from this device. Please slow down a moment.' },
 });
 
-// Multipart parser for the upload endpoint: memory storage, single file, hard
-// 8 MB cap enforced by multer before the buffer ever reaches our handler.
+// Multipart parser for the upload endpoint: memory storage, single file. multer's
+// fileSize is a single global per-file cap, so we set it to the LARGER video limit
+// (25 MB) and enforce the real per-kind cap (image 8 MB / video 25 MB) in the
+// handler once the bytes have been magic-byte sniffed. Both sit under Cloud Run's
+// 32 MiB HTTP/1 request ceiling.
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_IMAGE_BYTES, files: 1 },
+  limits: { fileSize: MAX_VIDEO_BYTES, files: 1 },
 });
 
 // API Endpoints
@@ -159,54 +165,64 @@ app.post('/api/issues/:id/corroborate', socialLimiter, requireAuth, async (req, 
   }
 });
 
-// Image upload (server-side via Admin SDK; see src/services/storage.ts for the
-// upload-vs-client rationale). Validates the file is genuinely an image by its
-// magic bytes (not the client-supplied Content-Type), re-checks the size cap,
-// extracts any EXIF GPS as a location bonus, and returns a renderable URL.
+// Media upload (server-side via Admin SDK; see src/services/storage.ts for the
+// upload-vs-client rationale). Accepts images AND video. Validates the file is
+// genuinely a supported media type by its magic bytes (not the client-supplied
+// Content-Type), enforces the per-kind size cap (image 8 MB / video 25 MB),
+// extracts EXIF GPS for photos only, and returns a renderable URL + mediaType.
 app.post('/api/upload', writeLimiter, requireAuth, (req, res) => {
   upload.single('photo')(req, res, async (err: any) => {
     try {
       if (err) {
         const tooLarge = err?.code === 'LIMIT_FILE_SIZE';
         return res.status(tooLarge ? 413 : 400).json({
-          error: tooLarge ? 'Image is too large (max 8 MB).' : 'Could not read the uploaded file.',
+          error: tooLarge ? 'That file is too large (max 25 MB for video, 8 MB for photos).' : 'Could not read the uploaded file.',
         });
       }
       const file = (req as any).file as { buffer: Buffer; size: number } | undefined;
       if (!file || !file.buffer || file.size === 0) {
-        return res.status(400).json({ error: 'No photo was uploaded.' });
-      }
-      if (file.size > MAX_IMAGE_BYTES) {
-        return res.status(413).json({ error: 'Image is too large (max 8 MB).' });
+        return res.status(400).json({ error: 'No file was uploaded.' });
       }
 
-      // Trust the bytes, not the header.
-      const sniffed = sniffImageMime(file.buffer);
+      // Trust the bytes, not the header. Determines image vs video too.
+      const sniffed = sniffMediaMime(file.buffer);
       if (!sniffed) {
-        return res.status(400).json({ error: 'That file is not a supported image (JPEG, PNG, WebP, or HEIC).' });
+        return res.status(400).json({ error: 'That file is not a supported image (JPEG, PNG, WebP, HEIC) or video (MP4, MOV, WebM).' });
+      }
+
+      // Per-kind size cap re-check (multer already blocked anything over 25 MB).
+      const isVideo = sniffed.kind === 'video';
+      const cap = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+      if (file.size > cap) {
+        return res.status(413).json({
+          error: isVideo ? 'Video is too large (max 25 MB).' : 'Image is too large (max 8 MB).',
+        });
       }
 
       // EXIF GPS is a best-effort bonus in the location ladder (GPS > EXIF > manual).
+      // Photos only — video carries no usable EXIF GPS, so skip the parse entirely.
       let exifLat: number | undefined;
       let exifLng: number | undefined;
-      try {
-        const gps = await exifr.gps(file.buffer);
-        if (gps && Number.isFinite(gps.latitude) && Number.isFinite(gps.longitude)) {
-          const check = validateCoords(gps.latitude, gps.longitude);
-          if (check.ok) {
-            exifLat = check.lat;
-            exifLng = check.lng;
+      if (!isVideo) {
+        try {
+          const gps = await exifr.gps(file.buffer);
+          if (gps && Number.isFinite(gps.latitude) && Number.isFinite(gps.longitude)) {
+            const check = validateCoords(gps.latitude, gps.longitude);
+            if (check.ok) {
+              exifLat = check.lat;
+              exifLng = check.lng;
+            }
           }
+        } catch (exifErr) {
+          console.warn('EXIF GPS extraction failed (non-fatal):', exifErr);
         }
-      } catch (exifErr) {
-        console.warn('EXIF GPS extraction failed (non-fatal):', exifErr);
       }
 
       const mediaUrl = await uploadIssueImage(file.buffer, sniffed.mime, sniffed.ext);
-      res.status(201).json({ mediaUrl, exifLat, exifLng });
+      res.status(201).json({ mediaUrl, mediaType: sniffed.kind, exifLat, exifLng });
     } catch (error: any) {
       console.error('Upload failure inside POST /api/upload:', error);
-      res.status(500).json({ error: 'Could not store the image. Please try again.' });
+      res.status(500).json({ error: 'Could not store the file. Please try again.' });
     }
   });
 });
@@ -221,12 +237,33 @@ app.post('/api/classify-preview', writeLimiter, requireAuth, async (req, res) =>
       return res.status(400).json({ error: desc.error });
     }
     const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl : '';
+    const mediaType = normalizeMediaType(req.body.mediaType);
 
     // Coordinates are optional at preview time (manual entry may still be pending);
     // default to Rajkot centre so classification + ward resolution can proceed.
     const coords = validateCoords(req.body.lat, req.body.lng);
     const lat = coords.ok ? coords.lat : 22.3;
     const lng = coords.ok ? coords.lng : 70.8;
+
+    // VIDEO: deliberately no automated classification — no keyframe extraction, no
+    // ffmpeg, no Gemini vision/video call (too heavy/risky for the timeline). We
+    // return a low-confidence safe default so the UI forces the citizen to pick a
+    // category; that explicit pick becomes the human-confirmed decision-gate rescue
+    // at post time (posts publicly). classifierUnavailable is FALSE — this is a
+    // deliberate design choice, not a Gemini outage, so no misleading 503 banner.
+    if (mediaType === 'video') {
+      const loc = resolveWardAndZone(lat, lng);
+      return res.json({
+        category: 'Other',
+        severity: 'MEDIUM',
+        title: desc.value.slice(0, 50),
+        confidence: 0.3,
+        ward: loc.ward,
+        zone: loc.zone,
+        duplicateCandidate: null,
+        classifierUnavailable: false,
+      });
+    }
 
     const suggestion = await classifyForPreview({ description: desc.value, mediaUrl, lat, lng });
     res.json(suggestion);
@@ -245,6 +282,7 @@ app.post('/api/report', writeLimiter, requireAuth, async (req, res) => {
     }
     const description = desc.value;
     const mediaUrl = typeof req.body.mediaUrl === 'string' ? req.body.mediaUrl : '';
+    const mediaType = normalizeMediaType(req.body.mediaType);
     // Reporter identity is the VERIFIED uid (un-spoofable), not client-supplied.
     const reporterId = user.uid;
     // Ensure the user profile exists (Doc 5 users/{uid}); non-fatal if it fails.
@@ -304,6 +342,7 @@ app.post('/api/report', writeLimiter, requireAuth, async (req, res) => {
     const result = await processTriagePipeline({
       description,
       mediaUrl,
+      mediaType,
       lat,
       lng,
       reporterId,

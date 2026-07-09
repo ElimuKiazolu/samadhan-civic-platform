@@ -35,6 +35,10 @@ const CATEGORIES: CivicIssue['category'][] = [
 ];
 
 const DESCRIPTION_MAX = 1000;
+// Mirror of the server cap (validation.ts MAX_VIDEO_BYTES) so we can reject an
+// oversized video on-device, before uploading 25 MB only to be 413'd. Kept under
+// Cloud Run's 32 MiB HTTP/1 request ceiling.
+const MAX_VIDEO_BYTES = 25 * 1024 * 1024; // 25 MB
 
 // Rajkot has 18 wards. A ward pick is the one-tap location fallback when GPS and
 // EXIF give nothing. Each ward maps to a DISTINCT coordinate that the server's
@@ -57,6 +61,10 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
   const [description, setDescription] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>('');
+  // 'photo' | 'video' — derived from the picked file, corrected to the server's
+  // magic-byte verdict after upload, and carried through classify-preview + report.
+  const [mediaType, setMediaType] = useState<'photo' | 'video'>('photo');
+  const [fileError, setFileError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Location ladder: GPS (primary) → EXIF (bonus) → manual
@@ -128,8 +136,19 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
   const handlePickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
+    const isVideo = f.type.startsWith('video/');
+    // On-device size guard: reject an oversized video BEFORE any upload attempt so
+    // a real phone clip never hits a silent 413 on the deployed app.
+    if (isVideo && f.size > MAX_VIDEO_BYTES) {
+      setFileError('That video is over 25 MB. Please trim it or record a shorter clip.');
+      // Keep any existing selection; don't swap in the rejected file.
+      e.target.value = '';
+      return;
+    }
+    setFileError('');
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(f);
+    setMediaType(isVideo ? 'video' : 'photo');
     setPreviewUrl(URL.createObjectURL(f));
   };
 
@@ -143,8 +162,10 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
 
     let uploadedUrl = '';
     let exifFromUpload: { lat: number; lng: number } | null = null;
+    // Default to the client-detected type; the server's magic-byte verdict wins.
+    let resolvedMediaType: 'photo' | 'video' = mediaType;
 
-    // 1. Upload the photo (optional) — server validates + extracts EXIF GPS.
+    // 1. Upload the media (optional) — server validates + (for photos) extracts EXIF GPS.
     if (file) {
       try {
         const form = new FormData();
@@ -153,15 +174,20 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.mediaUrl) {
           uploadedUrl = data.mediaUrl;
+          // Server sniffed the bytes — trust its type over the client's file.type.
+          if (data.mediaType === 'video' || data.mediaType === 'photo') {
+            resolvedMediaType = data.mediaType;
+            setMediaType(data.mediaType);
+          }
           if (Number.isFinite(data.exifLat) && Number.isFinite(data.exifLng)) {
             exifFromUpload = { lat: data.exifLat, lng: data.exifLng };
             setExifCoords(exifFromUpload);
           }
         } else {
-          setUploadWarning(data.error || 'Photo could not be uploaded — you can still post without it.');
+          setUploadWarning(data.error || 'File could not be uploaded — you can still post without it.');
         }
       } catch {
-        setUploadWarning('Photo upload failed — you can still post without it.');
+        setUploadWarning('File upload failed — you can still post without it.');
       }
     }
     setMediaUrl(uploadedUrl);
@@ -178,6 +204,7 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
         body: JSON.stringify({
           description: description.trim(),
           mediaUrl: uploadedUrl,
+          mediaType: resolvedMediaType,
           lat: coords?.lat,
           lng: coords?.lng,
         }),
@@ -238,6 +265,7 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
         body: JSON.stringify({
           description: description.trim(),
           mediaUrl,
+          mediaType,
           title: editTitle.trim(),
           category: editCategory,
           severity: editSeverity,
@@ -332,15 +360,16 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
                 </div>
               </div>
 
-              {/* Photo attach (camera on mobile via capture; file picker on desktop) */}
+              {/* Media attach — photo or video (camera on mobile via capture; file
+                  picker on desktop). accept lists both; capture is only a hint. */}
               <div className="space-y-1.5">
                 <label className="text-[10px] font-black uppercase tracking-wider font-mono text-ink-soft">
-                  Add a photo <span className="text-zinc-400 normal-case font-normal">(recommended)</span>
+                  Add a photo or video <span className="text-zinc-400 normal-case font-normal">(recommended)</span>
                 </label>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,video/*"
                   capture="environment"
                   onChange={handlePickFile}
                   className="hidden"
@@ -350,10 +379,14 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
                     onClick={() => fileInputRef.current?.click()}
                     className="relative w-full h-40 rounded-[12px] overflow-hidden border border-hairline group"
                   >
-                    <img src={previewUrl} alt="Selected" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-ink/0 group-hover:bg-ink/20 transition-colors flex items-center justify-center">
+                    {mediaType === 'video' ? (
+                      <video src={previewUrl} controls playsInline muted className="w-full h-full object-cover bg-ink" />
+                    ) : (
+                      <img src={previewUrl} alt="Selected" className="w-full h-full object-cover" />
+                    )}
+                    <div className="absolute inset-0 bg-ink/0 group-hover:bg-ink/20 transition-colors flex items-center justify-center pointer-events-none">
                       <span className="opacity-0 group-hover:opacity-100 bg-white/90 text-ink text-[10px] font-mono font-bold uppercase px-2 py-1 rounded">
-                        Change photo
+                        Change {mediaType === 'video' ? 'video' : 'photo'}
                       </span>
                     </div>
                   </button>
@@ -363,8 +396,24 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
                     className="w-full bg-white border border-dashed border-zinc-300 rounded-[12px] py-7 text-xs font-medium text-ink-soft hover:text-ink hover:border-civic flex flex-col items-center gap-1.5 transition-all"
                   >
                     <ImagePlus className="w-6 h-6 text-zinc-400" />
-                    Tap to take or choose a photo
+                    Tap to take or choose a photo or video
                   </button>
+                )}
+
+                {/* H.264 compatibility nudge — only for video. Subtle caption; does
+                    not block posting. Steers users away from HEVC clips that won't
+                    decode in Chrome/Firefox (we don't do server-side codec detection). */}
+                {mediaType === 'video' && previewUrl && (
+                  <p className="text-[9px] font-mono text-ink-soft/80 leading-relaxed">
+                    Tip: for best playback across devices, record in “Most Compatible” (H.264) format.
+                  </p>
+                )}
+
+                {fileError && (
+                  <div className="flex gap-2 items-start bg-amber-50 border border-amber-200 rounded-[8px] p-2 text-[10px] text-amber-800">
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                    <span>{fileError}</span>
+                  </div>
                 )}
               </div>
 
@@ -435,7 +484,11 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
               )}
 
               {previewUrl && (
-                <img src={previewUrl} alt="Evidence" className="w-full h-32 object-cover rounded-[10px] border border-hairline" />
+                mediaType === 'video' ? (
+                  <video src={previewUrl} controls playsInline muted className="w-full h-32 object-cover rounded-[10px] border border-hairline bg-ink" />
+                ) : (
+                  <img src={previewUrl} alt="Evidence" className="w-full h-32 object-cover rounded-[10px] border border-hairline" />
+                )
               )}
 
               <div className="space-y-1">
