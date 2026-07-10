@@ -12,11 +12,7 @@ scripts/spike/
 serviceAccountKey.json
 db.json
 uploads/
-<<<<<<< HEAD
 .claude/
-=======
-
 
 # Playwright MCP scratch output (screenshots, snapshots)
 .playwright-mcp/
->>>>>>> feature/maps
