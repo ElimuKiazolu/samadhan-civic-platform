@@ -12,4 +12,4 @@ scripts/spike/
 serviceAccountKey.json
 db.json
 uploads/
-
+.claude/
