@@ -13,3 +13,6 @@ serviceAccountKey.json
 db.json
 uploads/
 
+
+# Playwright MCP scratch output (screenshots, snapshots)
+.playwright-mcp/
