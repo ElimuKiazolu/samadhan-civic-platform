@@ -205,6 +205,10 @@ export async function classifyForPreview(report: {
 export async function processTriagePipeline(report: {
   description: string;
   mediaUrl?: string;
+  /** 'photo' (default) or 'video' — persisted on the issue so renderers pick the
+   *  right element. Video always arrives via the human-confirmed overrides path,
+   *  so NO Gemini/vision call runs for it here. */
+  mediaType?: "photo" | "video";
   lat: number;
   lng: number;
   reporterId?: string;
@@ -274,7 +278,7 @@ export async function processTriagePipeline(report: {
       title: report.description.substring(0, 50) + "...",
       description: report.description,
       mediaUrl: report.mediaUrl || 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?auto=format&fit=crop&w=800&q=80',
-      mediaType: "photo",
+      mediaType: report.mediaType || "photo",
       lat: report.lat,
       lng: report.lng,
       geohash,
@@ -415,7 +419,7 @@ export async function processTriagePipeline(report: {
     title: classification.title,
     description: report.description,
     mediaUrl: report.mediaUrl || 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?auto=format&fit=crop&w=800&q=80',
-    mediaType: "photo",
+    mediaType: report.mediaType || "photo",
     lat: report.lat,
     lng: report.lng,
     geohash,

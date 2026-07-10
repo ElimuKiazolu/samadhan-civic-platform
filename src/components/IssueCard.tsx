@@ -1,6 +1,6 @@
 import React from 'react';
 import { CivicIssue } from '../types';
-import { MapPin, Users, MessageSquare, ShieldAlert } from 'lucide-react';
+import { MapPin, Users, MessageSquare, ShieldAlert, Play } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface IssueCardProps {
@@ -43,15 +43,33 @@ export const IssueCard: React.FC<IssueCardProps> = ({ issue, onSelect }) => {
       onClick={() => onSelect(issue)}
       className="bg-surface rounded-[12px] overflow-hidden border border-hairline shadow-sm hover:shadow-md cursor-pointer transition-shadow flex flex-col"
     >
-      {/* Media Thumbnail */}
+      {/* Media Thumbnail — video renders its first frame (preload metadata) with a
+          play badge; controls live in the detail modal. Photos render as before. */}
       <div className="h-44 w-full bg-zinc-100 relative overflow-hidden">
-        <img
-          src={issue?.mediaUrl || ''}
-          alt={issue?.title || ''}
-          referrerPolicy="no-referrer"
-          className="w-full h-full object-cover"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent"></div>
+        {issue?.mediaType === 'video' ? (
+          <>
+            <video
+              src={issue?.mediaUrl || ''}
+              muted
+              playsInline
+              preload="metadata"
+              className="w-full h-full object-cover bg-ink"
+            />
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <span className="bg-black/55 text-white rounded-full p-2.5">
+                <Play className="w-5 h-5 fill-white" />
+              </span>
+            </div>
+          </>
+        ) : (
+          <img
+            src={issue?.mediaUrl || ''}
+            alt={issue?.title || ''}
+            referrerPolicy="no-referrer"
+            className="w-full h-full object-cover"
+          />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent pointer-events-none"></div>
         
         {/* Category Chip + Status Stamp */}
         <div className="absolute bottom-3 left-3 right-3 flex justify-between items-center">

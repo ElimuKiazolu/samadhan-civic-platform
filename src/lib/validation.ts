@@ -24,6 +24,14 @@ export type IssueSeverity = (typeof ALLOWED_SEVERITIES)[number];
 export const DESCRIPTION_MAX = 1000;
 export const TITLE_MAX = 120;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB
+// Video cap sits safely UNDER Cloud Run's 32 MiB HTTP/1 request ceiling (a 50 MB
+// upload would be rejected at the edge with a silent 413 before it ever reaches
+// multer). 25 MB leaves headroom for multipart framing. Raising this later would
+// require enabling end-to-end HTTP/2 on the Cloud Run service (--use-http2).
+export const MAX_VIDEO_BYTES = 25 * 1024 * 1024; // 25 MB
+
+export const ALLOWED_MEDIA_TYPES = ['photo', 'video'] as const;
+export type MediaType = (typeof ALLOWED_MEDIA_TYPES)[number];
 
 // Rough Rajkot bounding box — used for a SOFT "outside service area" hint only;
 // coordinates outside it are still accepted (a citizen reporting just over a
@@ -116,11 +124,12 @@ export function validateCoords(rawLat: unknown, rawLng: unknown): CoordsResult {
   return { ok: true, lat, lng, outsideServiceArea };
 }
 
-const IMAGE_SIGNATURES: Array<{ mime: string; ext: string; test: (b: Buffer) => boolean }> = [
-  { mime: 'image/jpeg', ext: 'jpg', test: (b) => b.length > 2 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+const MEDIA_SIGNATURES: Array<{ mime: string; ext: string; kind: MediaType; test: (b: Buffer) => boolean }> = [
+  { mime: 'image/jpeg', ext: 'jpg', kind: 'photo', test: (b) => b.length > 2 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
   {
     mime: 'image/png',
     ext: 'png',
+    kind: 'photo',
     test: (b) =>
       b.length > 7 &&
       b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 &&
@@ -129,36 +138,89 @@ const IMAGE_SIGNATURES: Array<{ mime: string; ext: string; test: (b: Buffer) => 
   {
     mime: 'image/webp',
     ext: 'webp',
+    kind: 'photo',
     test: (b) =>
       b.length > 11 &&
       b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP',
   },
   {
-    // HEIC/HEIF: an ISO-BMFF 'ftyp' box whose major brand is one of these.
+    // HEIC/HEIF: an ISO-BMFF 'ftyp' box whose major brand is one of these. NOTE:
+    // the 'hevc' brand here is the HEIC still-image container, NOT H.265 video —
+    // keep it classified as a photo. Checked BEFORE the video ftyp branch below;
+    // the brand sets are disjoint so order is safe either way.
     mime: 'image/heic',
     ext: 'heic',
+    kind: 'photo',
     test: (b) => {
       if (b.length < 12 || b.toString('ascii', 4, 8) !== 'ftyp') return false;
       const brand = b.toString('ascii', 8, 12);
       return ['heic', 'heix', 'hevc', 'mif1', 'msf1', 'heif'].includes(brand);
     },
   },
+  {
+    // MP4 / ISO-BMFF video: an 'ftyp' box whose major brand is a known video
+    // brand. (HEIC image brands are matched above and excluded here.)
+    mime: 'video/mp4',
+    ext: 'mp4',
+    kind: 'video',
+    test: (b) => {
+      if (b.length < 12 || b.toString('ascii', 4, 8) !== 'ftyp') return false;
+      const brand = b.toString('ascii', 8, 12);
+      return ['isom', 'iso2', 'mp41', 'mp42', 'avc1', 'mp71', 'dash', 'm4v ', 'MSNV'].includes(brand);
+    },
+  },
+  {
+    // QuickTime MOV — the common iPhone container (major brand 'qt  ', trailing
+    // spaces). May wrap H.264 or HEVC/H.265; we accept the container and let the
+    // browser decode (HEVC playback risk is handled in the UI, not here).
+    mime: 'video/quicktime',
+    ext: 'mov',
+    kind: 'video',
+    test: (b) => {
+      if (b.length < 12 || b.toString('ascii', 4, 8) !== 'ftyp') return false;
+      return b.toString('ascii', 8, 12) === 'qt  ';
+    },
+  },
+  {
+    // WebM / Matroska: EBML header magic. We don't distinguish webm vs mkv here
+    // (both start with this) — video/webm is the correct, playable label for our use.
+    mime: 'video/webm',
+    ext: 'webm',
+    kind: 'video',
+    test: (b) => b.length > 3 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3,
+  },
 ];
 
-export interface SniffedImage {
+export interface SniffedMedia {
   mime: string;
   ext: string;
+  kind: MediaType;
 }
 
 /**
- * Verify a buffer is genuinely one of our accepted image formats by inspecting
- * its magic bytes — NOT by trusting the client-supplied Content-Type header,
- * which is attacker-controlled. Returns null if the bytes aren't a known image.
+ * Verify a buffer is genuinely one of our accepted media formats (image OR video)
+ * by inspecting its magic bytes — NOT by trusting the client-supplied
+ * Content-Type header, which is attacker-controlled. Returns null if the bytes
+ * aren't a known image or video, plus a `kind` discriminator so callers can
+ * branch size/EXIF/classification per media type.
  */
-export function sniffImageMime(buffer: Buffer): SniffedImage | null {
+export function sniffMediaMime(buffer: Buffer): SniffedMedia | null {
   if (!buffer || buffer.length < 12) return null;
-  for (const sig of IMAGE_SIGNATURES) {
-    if (sig.test(buffer)) return { mime: sig.mime, ext: sig.ext };
+  for (const sig of MEDIA_SIGNATURES) {
+    if (sig.test(buffer)) return { mime: sig.mime, ext: sig.ext, kind: sig.kind };
   }
   return null;
+}
+
+/** Legacy alias — image-only sniff for any caller that must reject video. */
+export function sniffImageMime(buffer: Buffer): SniffedMedia | null {
+  const sniffed = sniffMediaMime(buffer);
+  return sniffed && sniffed.kind === 'photo' ? sniffed : null;
+}
+
+/** Normalize a client-supplied media type to our closed set (defaults to photo). */
+export function normalizeMediaType(raw: unknown): MediaType {
+  return (ALLOWED_MEDIA_TYPES as readonly string[]).includes(String(raw))
+    ? (raw as MediaType)
+    : 'photo';
 }

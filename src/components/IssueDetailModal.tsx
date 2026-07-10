@@ -29,6 +29,9 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   const [sending, setSending] = useState(false);
   const [corroborated, setCorroborated] = useState(issue.isUserCorroborated || false);
   const [localConfirmedCount, setLocalConfirmedCount] = useState(issue.confirmedCount);
+  // Safety net for videos the browser can't decode (e.g. iPhone HEVC/H.265 in
+  // Chrome/Firefox): the <video> onError fires and we show a download fallback.
+  const [videoError, setVideoError] = useState(false);
   
   // Streaming state for Case Log lines
   const [visibleLinesCount, setVisibleLinesCount] = useState(0);
@@ -114,18 +117,44 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
 
         {/* Scrollable Container */}
         <div className="flex-1 overflow-y-auto px-5 pb-24 space-y-5">
-          {/* Media Hero */}
+          {/* Media Hero — video plays inline with controls; photos as before. */}
           <div className="h-56 bg-zinc-200 relative overflow-hidden rounded-[12px] border border-hairline">
-            <img
-              src={issue.mediaUrl}
-              alt="Issue Media"
-              referrerPolicy="no-referrer"
-              className="w-full h-full object-cover"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
+            {issue.mediaType === 'video' ? (
+              videoError ? (
+                <a
+                  href={issue.mediaUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full h-full flex flex-col items-center justify-center gap-2 bg-ink text-zinc-300 text-center px-4"
+                >
+                  <AlertTriangle className="w-6 h-6 text-amber-400" />
+                  <span className="text-[11px] font-mono leading-relaxed">
+                    This video may not play in this browser.<br />Tap to open or download it.
+                  </span>
+                </a>
+              ) : (
+                <video
+                  src={issue.mediaUrl}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  onError={() => setVideoError(true)}
+                  className="w-full h-full object-cover bg-ink"
+                />
+              )
+            ) : (
+              <img
+                src={issue.mediaUrl}
+                alt="Issue Media"
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
+              />
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent pointer-events-none"></div>
             
-            {/* Tag Overlay */}
-            <div className="absolute bottom-3 left-4 right-4 flex justify-between items-center">
+            {/* Tag Overlay — sits at the top for video so it never covers the
+                native <video> controls at the bottom; bottom for photos. */}
+            <div className={`absolute ${issue.mediaType === 'video' ? 'top-3' : 'bottom-3'} left-4 right-4 flex justify-between items-center pointer-events-none`}>
               <span className="bg-ink text-white text-[10px] font-bold px-2 py-0.5 uppercase tracking-wider rounded-[3px]">
                 {(issue.category || "").toUpperCase()}
               </span>
