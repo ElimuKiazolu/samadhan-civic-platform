@@ -191,8 +191,6 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
             </div>
           </div>
 
-          {showMap && <IssueMapModal issue={issue} onClose={() => setShowMap(false)} />}
-
           {/* Case Lifecycle Timeline */}
           <div className="bg-white border border-hairline rounded-[12px] p-4 space-y-3">
             <h3 className="text-xs font-bold uppercase tracking-widest font-mono text-ink-soft border-b border-hairline pb-2">
@@ -361,6 +359,14 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
           </button>
         </form>
       </motion.div>
+
+      {/* Map sheet — a sibling of the detail sheet inside this overlay (which is
+          `absolute inset-0` on the phone column and has NO transform), so the map
+          sheet's own `absolute inset-0` stays within the ~430px app frame and
+          slides up over the detail sheet. */}
+      <AnimatePresence>
+        {showMap && <IssueMapModal issue={issue} onClose={() => setShowMap(false)} />}
+      </AnimatePresence>
     </div>
   );
 };
