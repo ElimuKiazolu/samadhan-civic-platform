@@ -4,6 +4,7 @@ import { X, Map, Users, Send, Check, AlertTriangle, ChevronDown, ChevronUp, Cloc
 import { motion, AnimatePresence } from 'motion/react';
 import { getStatusColors } from './IssueCard';
 import { useAuth } from '../context/AuthContext';
+import { IssueMapModal } from './IssueMapModal';
 
 interface IssueDetailModalProps {
   issue: CivicIssue;
@@ -25,6 +26,7 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
 }) => {
   const { user, authedFetch } = useAuth();
   const [isCaseLogOpen, setIsCaseLogOpen] = useState(true);
+  const [showMap, setShowMap] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [sending, setSending] = useState(false);
   const [corroborated, setCorroborated] = useState(issue.isUserCorroborated || false);
@@ -180,11 +182,16 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                 <span className="text-civic font-bold font-mono">⬡</span>
                 <span>{issue.location} · <span className="font-mono text-ink-soft">{issue.ward}</span></span>
               </div>
-              <button className="text-civic hover:text-civic-deep font-bold font-mono flex items-center gap-0.5 text-[11px] uppercase tracking-wider">
+              <button
+                onClick={() => setShowMap(true)}
+                className="text-civic hover:text-civic-deep font-bold font-mono flex items-center gap-0.5 text-[11px] uppercase tracking-wider"
+              >
                 <Map className="w-3.5 h-3.5" /> Map View
               </button>
             </div>
           </div>
+
+          {showMap && <IssueMapModal issue={issue} onClose={() => setShowMap(false)} />}
 
           {/* Case Lifecycle Timeline */}
           <div className="bg-white border border-hairline rounded-[12px] p-4 space-y-3">

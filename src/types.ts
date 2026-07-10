@@ -43,6 +43,9 @@ export interface CivicIssue {
   description?: string;
   lat?: number;
   lng?: number;
+  /** True when lat/lng is a coarse ward-level approximation (not GPS/EXIF/typed),
+   *  so the map can label it honestly. Set by the triage pipeline. */
+  approxLocation?: boolean;
   zone?: string;
   confidence?: number;
   isPublic?: boolean;
