@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { X, MapPin, ExternalLink, AlertTriangle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { APIProvider, Map, Marker } from '@vis.gl/react-google-maps';
@@ -103,40 +102,50 @@ export const IssueMapModal: React.FC<IssueMapModalProps> = ({ issue, onClose }) 
     </div>
   );
 
-  return createPortal(
+  // Rendered as a child of the phone-frame column (position: relative), so an
+  // `absolute inset-0` overlay + a bottom sheet that slides up stays INSIDE the
+  // ~430px app frame — matching IssueDetailModal. No portal to document.body,
+  // which would escape the frame and cover the whole desktop viewport.
+  return (
     <div
-      className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="absolute inset-0 z-[60] bg-ink/50 flex items-end justify-center"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="Issue location map"
     >
       <motion.div
-        initial={{ opacity: 0, y: 24 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.2, ease: 'easeOut' }}
+        initial={{ y: '100%' }}
+        animate={{ y: 0 }}
+        exit={{ y: '100%' }}
+        transition={{ type: 'spring', damping: 25, stiffness: 220 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[430px] bg-white rounded-t-[20px] sm:rounded-[20px] border border-hairline overflow-hidden shadow-2xl flex flex-col max-h-[88vh]"
+        className="w-full bg-white rounded-t-[24px] border-t border-hairline overflow-hidden shadow-2xl flex flex-col max-h-[88%]"
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-hairline bg-white">
-          <div className="flex items-center gap-2 min-w-0">
-            <MapPin className="w-4 h-4 text-civic flex-shrink-0" />
-            <span className="text-xs font-bold uppercase tracking-widest font-mono text-ink truncate">
-              Location
-            </span>
+        {/* Handle bar + header (mirrors the detail sheet's grab handle) */}
+        <div className="flex-shrink-0">
+          <div className="h-6 w-full flex items-center justify-center cursor-pointer" onClick={onClose}>
+            <div className="w-12 h-1 bg-zinc-300 rounded-full" />
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close map"
-            className="text-ink-soft hover:text-ink p-1 -mr-1"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center justify-between px-4 pb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <MapPin className="w-4 h-4 text-civic flex-shrink-0" />
+              <span className="text-xs font-bold uppercase tracking-widest font-mono text-ink truncate">
+                Location
+              </span>
+            </div>
+            <button
+              onClick={onClose}
+              aria-label="Close map"
+              className="p-1 rounded-full bg-zinc-100 border border-hairline text-ink-soft hover:text-ink"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Map surface (fixed height so the map has room to render) */}
-        <div className="relative h-64 sm:h-72 bg-paper">
+        <div className="relative h-60 sm:h-64 bg-paper mx-4 rounded-[12px] overflow-hidden border border-hairline">
           {canRenderMap ? (
             <MapErrorBoundary fallback={Fallback}>
               <APIProvider
@@ -181,7 +190,7 @@ export const IssueMapModal: React.FC<IssueMapModalProps> = ({ issue, onClose }) 
 
         {/* Footer — the quota-free, key-free deep link is ALWAYS present, in every
             state, so navigation works even when the embedded map does not. */}
-        <div className="px-4 py-3 border-t border-hairline bg-white space-y-2">
+        <div className="px-4 pt-3 pb-5 space-y-2 flex-shrink-0">
           <div className="flex items-center gap-1.5 text-[11px] text-ink-soft">
             <span className="text-civic font-bold font-mono">⬡</span>
             <span className="truncate">
@@ -200,7 +209,6 @@ export const IssueMapModal: React.FC<IssueMapModalProps> = ({ issue, onClose }) 
           </a>
         </div>
       </motion.div>
-    </div>,
-    document.body
+    </div>
   );
 };
