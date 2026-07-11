@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { CivicIssue } from '../types';
-import { X, MapPin, Check, Loader2, Sparkles, AlertTriangle, Crosshair, ImagePlus, ServerOff, LocateFixed } from 'lucide-react';
+import { X, MapPin, Check, Loader2, Sparkles, AlertTriangle, Crosshair, ImagePlus, ServerOff, LocateFixed, Camera } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useAuth } from '../context/AuthContext';
+import { CameraCapture } from './CameraCapture';
+import { isCaptureSupported } from '../lib/capture';
 
 export interface ReportResult {
   outcome: 'VALIDATED' | 'NEEDS_INFO' | 'REJECTED' | 'DUPLICATE';
@@ -66,6 +68,11 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
   const [mediaType, setMediaType] = useState<'photo' | 'video'>('photo');
   const [fileError, setFileError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // In-app camera capture. `cameraSupported` is computed once (needs a secure
+  // context + getUserMedia + MediaRecorder); when false the capture option is
+  // hidden entirely and only the gallery upload shows.
+  const [showCamera, setShowCamera] = useState(false);
+  const [cameraSupported] = useState(() => isCaptureSupported());
 
   // Location ladder: GPS (primary) → EXIF (bonus) → manual
   const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -133,23 +140,35 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
     };
   }, [previewUrl]);
 
-  const handlePickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const isVideo = f.type.startsWith('video/');
-    // On-device size guard: reject an oversized video BEFORE any upload attempt so
-    // a real phone clip never hits a silent 413 on the deployed app.
-    if (isVideo && f.size > MAX_VIDEO_BYTES) {
+  // Shared media intake for BOTH paths (gallery file input + in-app camera). Runs
+  // the on-device 25 MB video guard, swaps in the new media, and revokes the old
+  // object URL. Returns false when the file was rejected (kept the old selection).
+  const acceptMedia = (f: File, kind: 'photo' | 'video'): boolean => {
+    if (kind === 'video' && f.size > MAX_VIDEO_BYTES) {
       setFileError('That video is over 25 MB. Please trim it or record a shorter clip.');
-      // Keep any existing selection; don't swap in the rejected file.
-      e.target.value = '';
-      return;
+      return false;
     }
     setFileError('');
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(f);
-    setMediaType(isVideo ? 'video' : 'photo');
+    setMediaType(kind);
     setPreviewUrl(URL.createObjectURL(f));
+    return true;
+  };
+
+  const handlePickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const kind: 'photo' | 'video' = f.type.startsWith('video/') ? 'video' : 'photo';
+    // On rejection, clear the input so the same oversized file can be re-picked
+    // after trimming; keep any existing valid selection.
+    if (!acceptMedia(f, kind)) e.target.value = '';
+  };
+
+  // Camera hands back a File identical in shape to a gallery pick.
+  const handleCameraCapture = (f: File, kind: 'photo' | 'video') => {
+    acceptMedia(f, kind);
+    setShowCamera(false);
   };
 
   const effectiveCoords = (): { lat: number; lng: number } | null => gpsCoords ?? exifCoords ?? null;
@@ -366,39 +385,47 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
                 <label className="text-[10px] font-black uppercase tracking-wider font-mono text-ink-soft">
                   Add a photo or video <span className="text-zinc-400 normal-case font-normal">(recommended)</span>
                 </label>
+                {/* Gallery/file picker — no `capture` attr so it opens the file
+                    chooser (which on mobile still offers the native camera too).
+                    The in-app camera below is the richer, 25 s-capped capture. */}
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept="image/*,video/*"
-                  capture="environment"
                   onChange={handlePickFile}
                   className="hidden"
                 />
-                {previewUrl ? (
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="relative w-full h-40 rounded-[12px] overflow-hidden border border-hairline group"
-                  >
+
+                {previewUrl && (
+                  <div className="relative w-full h-40 rounded-[12px] overflow-hidden border border-hairline">
                     {mediaType === 'video' ? (
                       <video src={previewUrl} controls playsInline muted className="w-full h-full object-cover bg-ink" />
                     ) : (
                       <img src={previewUrl} alt="Selected" className="w-full h-full object-cover" />
                     )}
-                    <div className="absolute inset-0 bg-ink/0 group-hover:bg-ink/20 transition-colors flex items-center justify-center pointer-events-none">
-                      <span className="opacity-0 group-hover:opacity-100 bg-white/90 text-ink text-[10px] font-mono font-bold uppercase px-2 py-1 rounded">
-                        Change {mediaType === 'video' ? 'video' : 'photo'}
-                      </span>
-                    </div>
-                  </button>
-                ) : (
+                  </div>
+                )}
+
+                {/* Two-option chooser: in-app camera (when supported) + gallery.
+                    Both feed the SAME acceptMedia() intake. */}
+                <div className={cameraSupported ? 'grid grid-cols-2 gap-2' : ''}>
+                  {cameraSupported && (
+                    <button
+                      onClick={() => setShowCamera(true)}
+                      className="bg-white border border-dashed border-zinc-300 rounded-[12px] py-5 text-[11px] font-medium text-ink-soft hover:text-ink hover:border-civic flex flex-col items-center gap-1.5 transition-all"
+                    >
+                      <Camera className="w-5 h-5 text-zinc-400" />
+                      {previewUrl ? 'Retake' : 'Take photo/video'}
+                    </button>
+                  )}
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-full bg-white border border-dashed border-zinc-300 rounded-[12px] py-7 text-xs font-medium text-ink-soft hover:text-ink hover:border-civic flex flex-col items-center gap-1.5 transition-all"
+                    className={`bg-white border border-dashed border-zinc-300 rounded-[12px] ${cameraSupported ? 'py-5' : 'py-7 w-full'} text-[11px] font-medium text-ink-soft hover:text-ink hover:border-civic flex flex-col items-center gap-1.5 transition-all`}
                   >
-                    <ImagePlus className="w-6 h-6 text-zinc-400" />
-                    Tap to take or choose a photo or video
+                    <ImagePlus className={`${cameraSupported ? 'w-5 h-5' : 'w-6 h-6'} text-zinc-400`} />
+                    {cameraSupported ? (previewUrl ? 'Change / gallery' : 'Upload from gallery') : (previewUrl ? 'Change photo or video' : 'Tap to take or choose a photo or video')}
                   </button>
-                )}
+                </div>
 
                 {/* H.264 compatibility nudge — only for video. Subtle caption; does
                     not block posting. Steers users away from HEVC clips that won't
@@ -680,6 +707,16 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
           </div>
         )}
       </motion.div>
+
+      {/* In-app camera overlay (full-bleed, above the report modal). Any failure
+          routes back to the gallery upload — never a dead end. */}
+      {showCamera && (
+        <CameraCapture
+          onCapture={handleCameraCapture}
+          onCancel={() => setShowCamera(false)}
+          onRequestUpload={() => { setShowCamera(false); fileInputRef.current?.click(); }}
+        />
+      )}
     </div>
   );
 };
