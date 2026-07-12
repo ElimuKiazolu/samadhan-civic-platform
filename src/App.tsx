@@ -249,11 +249,12 @@ export default function App() {
   });
 
   return (
-    <div className="w-full h-screen bg-paper flex justify-center overflow-hidden">
+    <div className="w-full h-app bg-paper flex justify-center overflow-hidden">
       {/* Main Single Column Container */}
-      <div className="w-full max-w-[430px] h-screen bg-white relative flex flex-col md:shadow-[0_0_24px_rgba(22,24,29,0.06)] md:border-x md:border-hairline overflow-hidden">
-        {/* Brand App Header + auth chip (role is verified, never self-assigned) */}
-        <header className="pt-5 px-6 pb-2.5 border-b border-hairline flex justify-between items-center shrink-0 bg-white">
+      <div className="w-full max-w-[430px] h-app bg-white relative flex flex-col md:shadow-[0_0_24px_rgba(22,24,29,0.06)] md:border-x md:border-hairline overflow-hidden">
+        {/* Brand App Header + auth chip (role is verified, never self-assigned).
+            pt-safe-header keeps content clear of the iOS notch/status bar. */}
+        <header className="pt-safe-header px-6 pb-2.5 border-b border-hairline flex justify-between items-center shrink-0 bg-white">
           <h1 className="text-xl font-display font-black tracking-tighter text-ink uppercase">
             Samadhan
           </h1>
@@ -285,8 +286,9 @@ export default function App() {
           )}
         </header>
 
-        {/* Scrollable/Interactive Internal View Body */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-paper pb-20 relative">
+        {/* Scrollable/Interactive Internal View Body. pb-body-nav reserves the
+            nav height + home-indicator inset so content never hides behind it. */}
+        <div className="flex-1 flex flex-col overflow-hidden bg-paper pb-body-nav relative">
           
           {/* Citizen experience is available to EVERYONE (incl. authority). The
               Authority queue is an EXTRA view, never a replacement. */}
@@ -356,7 +358,7 @@ export default function App() {
 
           {/* Bottom navigation — shown for everyone (citizen experience). The
               Authority tab is appended only for verified authority users. */}
-          <nav className="absolute bottom-0 left-0 right-0 h-[64px] bg-white border-t border-hairline flex justify-around items-center px-4 pb-2 z-30 select-none shadow-[0_-2px_12px_rgba(22,24,29,0.03)]">
+          <nav className="absolute bottom-0 left-0 right-0 min-h-[64px] bg-white border-t border-hairline flex justify-around items-center px-4 pt-2 pb-safe-nav z-30 select-none shadow-[0_-2px_12px_rgba(22,24,29,0.03)]">
               <button
                 onClick={() => setActiveTab('feed')}
                 className={`flex flex-col items-center gap-1 transition-all ${

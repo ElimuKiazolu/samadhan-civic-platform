@@ -29,3 +29,35 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
 }
+
+/* ── PWA mobile viewport + iOS safe areas ──────────────────────────────────
+   The installed app runs display:standalone with a viewport-fit=cover meta, so
+   the web content extends under the notch/status bar and the home indicator. */
+
+/* Bug 1 — full-height shell uses the DYNAMIC viewport height so the bottom nav
+   isn't pushed off-screen by mobile browser chrome. The base utility is 100vh
+   (the fallback for browsers without dvh); the @supports guard upgrades to
+   100dvh where available. The guard also stops the CSS minifier from collapsing
+   the two into a single dvh declaration (which would drop the fallback). */
+@utility h-app {
+  height: 100vh;
+}
+@supports (height: 1dvh) {
+  .h-app {
+    height: 100dvh;
+  }
+}
+
+/* Bug 2 — safe-area insets. max() preserves the original spacing on devices with
+   no insets (desktop, non-notch phones) so nothing collapses to zero. */
+@utility pt-safe-header {
+  padding-top: max(1.25rem, env(safe-area-inset-top));
+}
+@utility pb-safe-nav {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+/* The scroll body reserves space for the absolute bottom nav PLUS the home-
+   indicator inset, so the last items never hide behind the nav on iOS. */
+@utility pb-body-nav {
+  padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+}
