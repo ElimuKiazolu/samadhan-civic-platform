@@ -235,16 +235,26 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
             
             {/* Location Banner */}
             <div className="flex items-center justify-between bg-white border border-hairline p-3 rounded-[8px] text-xs">
-              <div className="flex items-center gap-1.5 font-medium">
+              <div className="flex items-center gap-1.5 font-medium min-w-0">
                 <span className="text-civic font-bold font-mono">⬡</span>
-                <span>{issue.location} · <span className="font-mono text-ink-soft">{issue.ward}</span></span>
+                <span className="truncate">{issue.location} · <span className="font-mono text-ink-soft">{issue.ward}</span></span>
               </div>
               <button
                 onClick={() => setShowMap(true)}
-                className="text-civic hover:text-civic-deep font-bold font-mono flex items-center gap-0.5 text-[11px] uppercase tracking-wider"
+                className="text-civic hover:text-civic-deep font-bold font-mono flex items-center gap-0.5 text-[11px] uppercase tracking-wider shrink-0"
               >
                 <Map className="w-3.5 h-3.5" /> Map View
               </button>
+            </div>
+
+            {/* City routing — which municipal corporation owns this case. */}
+            <div className="flex items-center gap-1.5 text-[10px] font-mono">
+              <span className="bg-civic text-white px-2 py-0.5 rounded-[3px] font-black uppercase tracking-wider">
+                {issue.corporationShort || 'RMC'}
+              </span>
+              <span className="text-ink-soft">
+                {issue.city || 'Rajkot'} · {issue.corporationName || 'Rajkot Municipal Corporation'}
+              </span>
             </div>
 
             {/* Category / severity / corroboration meta + full description. */}

@@ -54,6 +54,11 @@ export interface CivicIssue {
   isUserCorroborated?: boolean;
   // Optional server-side fields (denormalized issue shape; see db.ts / triage.ts).
   reporterId?: string;
+  // Multi-city routing (cities.ts). Absent ⇒ treat as Rajkot/RMC (legacy issues).
+  city?: string;             // 'Rajkot' | 'Ahmedabad' | 'Surat'
+  cityId?: string;           // 'rajkot' | 'ahmedabad' | 'surat'
+  corporationName?: string;  // 'Surat Municipal Corporation'
+  corporationShort?: string; // 'SMC'
   /** Authority resolution proof — a SEPARATE media field so the original evidence
    *  (mediaUrl) is never overwritten. Set by POST /api/issues/:id/status. */
   proofUrl?: string;
