@@ -11,9 +11,11 @@ interface AuthorityDashboardProps {
   issues: CivicIssue[];
   onUpdateStatus: (id: string, nextStatus: CivicIssue['status'], proofUrl?: string, proofMediaType?: 'photo' | 'video') => void | Promise<void>;
   onRefresh?: () => Promise<void> | void;
+  /** Open the full case dossier (reuses the shared IssueDetailModal). */
+  onSelectIssue?: (issue: CivicIssue) => void;
 }
 
-export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, onUpdateStatus, onRefresh }) => {
+export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, onUpdateStatus, onRefresh, onSelectIssue }) => {
   const { authedFetch } = useAuth();
   const [filter, setFilter] = useState<'ALL' | 'VALIDATED' | 'IN_PROGRESS' | 'SLA_BREACH'>('ALL');
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
@@ -255,7 +257,8 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
             return (
               <div
                 key={issue?.id}
-                className="bg-white rounded-[12px] border border-hairline p-4 space-y-3 shadow-xs"
+                onClick={() => issue && onSelectIssue?.(issue)}
+                className={`bg-white rounded-[12px] border border-hairline p-4 space-y-3 shadow-xs ${onSelectIssue ? 'cursor-pointer hover:border-civic/50 hover:shadow-md transition-all' : ''}`}
               >
                 {/* ID & category */}
                 <div className="flex justify-between items-center text-[10px] font-mono">
@@ -287,12 +290,13 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
                   <span className="text-civic font-black font-sans text-xs">{issue?.confirmedCount ?? 0} Verified pings</span>
                 </div>
 
-                {/* Case Action Buttons */}
+                {/* Case Action Buttons — stopPropagation so acting doesn't also
+                    open the dossier (the rest of the card opens it). */}
                 {statusStr !== 'RESOLVED' && issue?.id && (
                   <div className="flex gap-2 pt-1">
                     {statusStr === 'VALIDATED' || statusStr === 'OPEN' ? (
                       <button
-                        onClick={() => onUpdateStatus(issue.id, 'IN_PROGRESS')}
+                        onClick={(e) => { e.stopPropagation(); onUpdateStatus(issue.id, 'IN_PROGRESS'); }}
                         className="flex-1 bg-ink text-white font-mono uppercase font-bold tracking-wider py-2 text-[10px] rounded-[6px] hover:bg-zinc-800 transition-colors flex items-center justify-center gap-1 border border-zinc-900"
                       >
                         <Clock className="w-3.5 h-3.5" /> Acknowledge Case
@@ -301,13 +305,19 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
 
                     {statusStr !== 'RESOLVED' && (
                       <button
-                        onClick={() => handleOpenResolveModal(issue.id)}
+                        onClick={(e) => { e.stopPropagation(); handleOpenResolveModal(issue.id); }}
                         className="flex-1 bg-civic hover:bg-civic-deep text-white font-mono uppercase font-bold tracking-wider py-2 text-[10px] rounded-[6px] transition-colors flex items-center justify-center gap-1 border border-civic"
                       >
                         <CheckCircle2 className="w-3.5 h-3.5" /> Resolve w/ Proof
                       </button>
                     )}
                   </div>
+                )}
+
+                {onSelectIssue && (
+                  <p className="text-[9px] font-mono text-zinc-400 uppercase tracking-widest text-center pt-0.5 select-none">
+                    Tap card for full dossier ›
+                  </p>
                 )}
               </div>
             );

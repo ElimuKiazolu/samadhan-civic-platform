@@ -286,6 +286,10 @@ export async function processTriagePipeline(report: {
       ward: `Ward ${locInfo.ward}`,
       zone: locInfo.zone,
       location: `Ward ${locInfo.ward}, ${locInfo.zone} Zone`,
+      city: locInfo.cityName,
+      cityId: locInfo.cityId,
+      corporationName: locInfo.corporationName,
+      corporationShort: locInfo.corporationShort,
       isPublic: true,
       confirmedCount: 1,
       agentStatus: "Setu: Offline queue. Awaiting cloud engine review.",
@@ -387,9 +391,10 @@ export async function processTriagePipeline(report: {
       classification.category as IssueCategory,
       locationDetails.zone,
       classification.severity,
-      new Date(startTs)
+      new Date(startTs),
+      locationDetails.cityId
     );
-    console.log(`Routed -> department ${routing.departmentId} (${routing.departmentName}), SLA ${routing.slaHours}h, due ${routing.slaDueAt}`);
+    console.log(`Routed -> ${locationDetails.corporationShort} department ${routing.departmentId} (${routing.departmentName}), SLA ${routing.slaHours}h, due ${routing.slaDueAt}`);
   }
 
   // Generate unique dossier ID tracking path
@@ -400,11 +405,11 @@ export async function processTriagePipeline(report: {
     : `classifying media……………… ${classification.category} · ${classification.severity}`;
   const telemetryLines: Array<{ ts: string; glyph: string; kind: string; text: string }> = [
     { ts: new Date(Date.now() - 3000).toISOString(), glyph: report.classifierUnavailable ? '⚠' : '›', kind: 'reasoning', text: classifyLine },
-    { ts: new Date(Date.now() - 1500).toISOString(), glyph: '›', kind: 'tool', text: `locating………………………… Ward ${locationDetails.ward}, ${locationDetails.zone} Zone` },
+    { ts: new Date(Date.now() - 1500).toISOString(), glyph: '›', kind: 'tool', text: `locating………………………… ${locationDetails.cityName} · Ward ${locationDetails.ward}, ${locationDetails.zone} Zone` },
     { ts: new Date().toISOString(), glyph: '✓', kind: 'action', text: `triage decision………………… ${outcome} (confidence: ${effectiveConfidence.toFixed(2)})` }
   ];
   if (routing) {
-    telemetryLines.push({ ts: new Date().toISOString(), glyph: '›', kind: 'tool', text: `routing…………………………… ${routing.departmentName}` });
+    telemetryLines.push({ ts: new Date().toISOString(), glyph: '›', kind: 'tool', text: `routing…………………………… ${locationDetails.corporationShort} · ${routing.departmentName}` });
   }
 
   const newIssue = {
@@ -428,6 +433,11 @@ export async function processTriagePipeline(report: {
     ward: `Ward ${locationDetails.ward}`,
     zone: locationDetails.zone,
     location: `Ward ${locationDetails.ward}, ${locationDetails.zone} Zone`,
+    // City routing (multi-city). Rajkot when coords resolve to Rajkot / no coords.
+    city: locationDetails.cityName,
+    cityId: locationDetails.cityId,
+    corporationName: locationDetails.corporationName,
+    corporationShort: locationDetails.corporationShort,
     // Routing + escalation ladder (present only for VALIDATED issues)
     ...(routing ? {
       departmentId: routing.departmentId,

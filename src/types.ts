@@ -19,6 +19,19 @@ export interface Comment {
   isAgent: boolean;
   text: string;
   time: string;
+  /** Voice marker so the thread renders three distinct treatments:
+   *  'agent' (Setu), 'authority' (official department), 'citizen' (default). */
+  authorRole?: 'citizen' | 'authority' | 'agent';
+  /** Department label shown on an authority (official) comment. */
+  departmentName?: string;
+}
+
+/** Setu's on-demand fix suggestions for an issue (generated when an authority
+ *  opens the dossier, then cached on the issue so it never re-generates). */
+export interface SetuSuggestions {
+  temporary: string;
+  permanent: string;
+  generatedAt: string;
 }
 
 export interface CivicIssue {
@@ -41,12 +54,22 @@ export interface CivicIssue {
   isUserCorroborated?: boolean;
   // Optional server-side fields (denormalized issue shape; see db.ts / triage.ts).
   reporterId?: string;
+  // Multi-city routing (cities.ts). Absent ⇒ treat as Rajkot/RMC (legacy issues).
+  city?: string;             // 'Rajkot' | 'Ahmedabad' | 'Surat'
+  cityId?: string;           // 'rajkot' | 'ahmedabad' | 'surat'
+  corporationName?: string;  // 'Surat Municipal Corporation'
+  corporationShort?: string; // 'SMC'
   /** Authority resolution proof — a SEPARATE media field so the original evidence
    *  (mediaUrl) is never overwritten. Set by POST /api/issues/:id/status. */
   proofUrl?: string;
   proofMediaType?: 'photo' | 'video';
   resolvedAt?: string;
   resolvedBy?: string;
+  /** Latest RMC complaint Setu drafted for this case (denormalised from the
+   *  dispatches record so the authority dossier can show it without a join). */
+  complaintDraft?: string;
+  /** Cached Setu fix suggestions (generated on first authority dossier open). */
+  setuSuggestions?: SetuSuggestions;
   description?: string;
   lat?: number;
   lng?: number;

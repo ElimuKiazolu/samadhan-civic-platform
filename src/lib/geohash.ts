@@ -1,3 +1,5 @@
+import { resolveCity } from "./cities";
+
 const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
 
 /**
@@ -43,26 +45,57 @@ export function encodeGeohash(lat: number, lng: number, precision: number = 7): 
 }
 
 /**
- * Resolves location to ward and zone.
- * Rajkot has 18 wards and 3 zones (East, West, Central).
- * Simple predictable deterministic mapping.
+ * Resolves a coordinate to its CITY, then a ward + zone within that city.
+ *
+ * City-agnostic (data-driven from cities.ts) but ZERO-REGRESSION for Rajkot: when
+ * the point resolves to Rajkot, the ward/zone are computed by the ORIGINAL Rajkot
+ * algorithm below, byte-for-byte. Other cities use the same style of deterministic
+ * approximation over their own centre/zone list (ward/zone were already an
+ * approximation, not real boundaries — see cities.ts ledger).
+ *
+ * Returns the legacy { ward, zone } PLUS the resolved city fields; existing callers
+ * that only read ward/zone are unaffected (additive).
  */
-export function resolveWardAndZone(lat: number, lng: number): { ward: number; zone: string } {
-  // Rajkot is roughly centered around lat 22.3, lng 70.8
-  // Let's create a stable mapping based on coordinates.
-  const latOffset = Math.abs(lat - 22.3) * 1000;
-  const lngOffset = Math.abs(lng - 70.8) * 1000;
-  
-  // Ward must be 1-18
-  const ward = (Math.floor(latOffset + lngOffset) % 18) + 1;
-  
-  // Zone E, W, or Central based on longitude
-  let zone = "Central";
-  if (lng > 70.82) {
-    zone = "East";
-  } else if (lng < 70.78) {
-    zone = "West";
+export function resolveWardAndZone(
+  lat: number,
+  lng: number
+): {
+  ward: number;
+  zone: string;
+  cityId: string;
+  cityName: string;
+  corporationName: string;
+  corporationShort: string;
+  outsideCoverage: boolean;
+} {
+  const { city, outsideCoverage } = resolveCity(lat, lng);
+  const cityFields = {
+    cityId: city.id,
+    cityName: city.cityName,
+    corporationName: city.corporationName,
+    corporationShort: city.corporationShort,
+    outsideCoverage,
+  };
+
+  if (city.id === "rajkot") {
+    // ── ORIGINAL Rajkot mapping — unchanged (zero regression). ──
+    const latOffset = Math.abs(lat - 22.3) * 1000;
+    const lngOffset = Math.abs(lng - 70.8) * 1000;
+    const ward = (Math.floor(latOffset + lngOffset) % 18) + 1;
+    let zone = "Central";
+    if (lng > 70.82) {
+      zone = "East";
+    } else if (lng < 70.78) {
+      zone = "West";
+    }
+    return { ward, zone, ...cityFields };
   }
-  
-  return { ward, zone };
+
+  // ── Generic per-city approximation (Ahmedabad, Surat, …). ──
+  const latOffset = Math.abs(lat - city.centre.lat) * 1000;
+  const lngOffset = Math.abs(lng - city.centre.lng) * 1000;
+  const magnitude = Math.floor(latOffset + lngOffset);
+  const ward = (magnitude % city.wardCount) + 1;
+  const zone = city.zones[magnitude % city.zones.length] || city.zones[0] || "Central";
+  return { ward, zone, ...cityFields };
 }

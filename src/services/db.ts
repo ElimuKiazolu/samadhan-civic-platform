@@ -362,6 +362,9 @@ export const dbService = {
       author: comment.author || 'Anonymous',
       authorId: comment.authorId || null,
       isAgent: !!comment.isAgent,
+      // Voice marker for three distinct thread treatments (citizen/authority/agent).
+      authorRole: comment.authorRole || (comment.isAgent ? 'agent' : 'citizen'),
+      departmentName: comment.departmentName || null,
       text: comment.text || '',
       time: comment.time || 'Just now',
       createdAt: new Date().toISOString()
