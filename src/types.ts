@@ -19,6 +19,19 @@ export interface Comment {
   isAgent: boolean;
   text: string;
   time: string;
+  /** Voice marker so the thread renders three distinct treatments:
+   *  'agent' (Setu), 'authority' (official department), 'citizen' (default). */
+  authorRole?: 'citizen' | 'authority' | 'agent';
+  /** Department label shown on an authority (official) comment. */
+  departmentName?: string;
+}
+
+/** Setu's on-demand fix suggestions for an issue (generated when an authority
+ *  opens the dossier, then cached on the issue so it never re-generates). */
+export interface SetuSuggestions {
+  temporary: string;
+  permanent: string;
+  generatedAt: string;
 }
 
 export interface CivicIssue {
@@ -47,6 +60,11 @@ export interface CivicIssue {
   proofMediaType?: 'photo' | 'video';
   resolvedAt?: string;
   resolvedBy?: string;
+  /** Latest RMC complaint Setu drafted for this case (denormalised from the
+   *  dispatches record so the authority dossier can show it without a join). */
+  complaintDraft?: string;
+  /** Cached Setu fix suggestions (generated on first authority dossier open). */
+  setuSuggestions?: SetuSuggestions;
   description?: string;
   lat?: number;
   lng?: number;
