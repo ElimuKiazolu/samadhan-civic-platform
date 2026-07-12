@@ -23,6 +23,9 @@ export interface Alert {
   time: string;
   ts: number;
   issueId: string;
+  /** Resolution proof media, when the alert is a resolution the citizen can view. */
+  proofUrl?: string;
+  proofMediaType?: 'photo' | 'video';
 }
 
 const CORROBORATION_MILESTONES = [25, 10, 5];
@@ -40,12 +43,13 @@ function relativeTime(iso?: string): string {
 }
 
 /** Map an issue's current state to its primary alert (one per issue). */
-function primaryAlert(issue: CivicIssue): Alert | null {
+function primaryAlert(issue: CivicIssue, currentUid?: string): Alert | null {
   const ts = new Date(issue.updatedAt || issue.createdAt || Date.now()).getTime() || Date.now();
   const time = relativeTime(issue.updatedAt || issue.createdAt);
   const dept = (issue as any).departmentName || issue.ward || 'RMC';
   const tier = (issue as any).escalationTier || 0;
   const base = { time, ts, issueId: issue.id };
+  const isMine = !!currentUid && issue.reporterId === currentUid;
 
   switch (issue.status) {
     case 'STALLED':
@@ -57,9 +61,14 @@ function primaryAlert(issue: CivicIssue): Alert | null {
     case 'IN_PROGRESS':
       return { ...base, id: `${issue.id}:IN_PROGRESS`, type: 'info', tag: dept,
         title: 'Work in progress', description: issue.agentStatus || `${dept} is working on this case.` };
-    case 'RESOLVED':
-      return { ...base, id: `${issue.id}:RESOLVED`, type: 'success', tag: dept,
-        title: 'Marked resolved', description: issue.agentStatus || 'Resolution recorded for this case.' };
+    case 'RESOLVED': {
+      const resolver = issue.resolvedBy || dept;
+      return { ...base, id: `${issue.id}:RESOLVED`, type: 'success', tag: resolver,
+        title: isMine ? 'Your report was resolved' : 'Case resolved',
+        description: `${resolver} marked "${issue.title}" resolved${issue.proofUrl ? ' — completion proof attached.' : '.'}`,
+        proofUrl: issue.proofUrl,
+        proofMediaType: issue.proofMediaType };
+    }
     case 'VALIDATED':
     case 'OPEN' as any:
       return { ...base, id: `${issue.id}:VALIDATED`, type: 'agent', tag: 'Setu Agent',
@@ -72,11 +81,11 @@ function primaryAlert(issue: CivicIssue): Alert | null {
 /**
  * Derive the full alert list from the issues feed, newest first, capped.
  */
-export function deriveAlerts(issues: CivicIssue[], cap = 30): Alert[] {
+export function deriveAlerts(issues: CivicIssue[], currentUid?: string, cap = 30): Alert[] {
   const alerts: Alert[] = [];
   for (const issue of issues || []) {
     if (!issue || issue.isPublic === false) continue;
-    const primary = primaryAlert(issue);
+    const primary = primaryAlert(issue, currentUid);
     if (primary) alerts.push(primary);
 
     // Secondary: corroboration milestone (highest crossed only).

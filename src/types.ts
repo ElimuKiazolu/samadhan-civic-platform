@@ -40,6 +40,13 @@ export interface CivicIssue {
   comments: Comment[];
   isUserCorroborated?: boolean;
   // Optional server-side fields (denormalized issue shape; see db.ts / triage.ts).
+  reporterId?: string;
+  /** Authority resolution proof — a SEPARATE media field so the original evidence
+   *  (mediaUrl) is never overwritten. Set by POST /api/issues/:id/status. */
+  proofUrl?: string;
+  proofMediaType?: 'photo' | 'video';
+  resolvedAt?: string;
+  resolvedBy?: string;
   description?: string;
   lat?: number;
   lng?: number;

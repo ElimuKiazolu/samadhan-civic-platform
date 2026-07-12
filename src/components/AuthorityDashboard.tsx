@@ -1,29 +1,32 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { CivicIssue } from '../types';
-import { ShieldAlert, CheckCircle2, Clock, MapPin, Loader2, UploadCloud, Check, Siren, ArrowUpCircle, AlertTriangle } from 'lucide-react';
+import { ShieldAlert, CheckCircle2, Clock, MapPin, Loader2, UploadCloud, Camera, ImagePlus, Siren, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getStatusColors } from './IssueCard';
 import { useAuth } from '../context/AuthContext';
+import { CameraCapture } from './CameraCapture';
+import { isCaptureSupported, MAX_VIDEO_BYTES } from '../lib/capture';
 
 interface AuthorityDashboardProps {
   issues: CivicIssue[];
-  onUpdateStatus: (id: string, nextStatus: CivicIssue['status'], proofUrl?: string) => void;
+  onUpdateStatus: (id: string, nextStatus: CivicIssue['status'], proofUrl?: string, proofMediaType?: 'photo' | 'video') => void | Promise<void>;
   onRefresh?: () => Promise<void> | void;
 }
-
-const MOCK_PROOF_IMAGES = [
-  'https://images.unsplash.com/photo-1590348697210-282d9f48ac62?auto=format&fit=crop&w=400&q=80', // completed road patch
-  'https://images.unsplash.com/photo-1471466054146-e71bcc0d2bb2?auto=format&fit=crop&w=400&q=80', // bright street scene with glowing lamps
-  'https://images.unsplash.com/photo-1542060748-10c28b629f6f?auto=format&fit=crop&w=400&q=80', // clean and dry pavement drain
-  'https://images.unsplash.com/photo-1616401784845-180882ba9ba8?auto=format&fit=crop&w=400&q=80'  // emptied waste bins inside enclosure
-];
 
 export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, onUpdateStatus, onRefresh }) => {
   const { authedFetch } = useAuth();
   const [filter, setFilter] = useState<'ALL' | 'VALIDATED' | 'IN_PROGRESS' | 'SLA_BREACH'>('ALL');
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
-  const [proofMediaIndex, setProofMediaIndex] = useState<number | null>(null);
   const [isResolving, setIsResolving] = useState(false);
+
+  // Proof capture/upload state (reuses the citizen flow's two-option pattern).
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [proofPreviewUrl, setProofPreviewUrl] = useState<string>('');
+  const [proofMediaType, setProofMediaType] = useState<'photo' | 'video'>('photo');
+  const [proofError, setProofError] = useState('');
+  const [showCamera, setShowCamera] = useState(false);
+  const [cameraSupported] = useState(() => isCaptureSupported());
+  const proofInputRef = useRef<HTMLInputElement>(null);
 
   // Autonomous SLA sweep (Setu sentinel) trigger state.
   const [sweepState, setSweepState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
@@ -74,24 +77,64 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
     return true;
   });
 
-  const handleOpenResolveModal = (issueId: string) => {
-    setSelectedIssueId(issueId);
-    setProofMediaIndex(null);
+  const clearProof = () => {
+    if (proofPreviewUrl) URL.revokeObjectURL(proofPreviewUrl);
+    setProofFile(null);
+    setProofPreviewUrl('');
+    setProofError('');
   };
 
-  const handleConfirmResolution = () => {
-    if (!selectedIssueId) return;
+  const closeResolveModal = () => {
+    clearProof();
+    setSelectedIssueId(null);
+    setShowCamera(false);
+  };
+
+  const handleOpenResolveModal = (issueId: string) => {
+    clearProof();
+    setSelectedIssueId(issueId);
+  };
+
+  // Shared proof intake for BOTH the file picker and the in-app camera.
+  const acceptProof = (f: File, kind: 'photo' | 'video'): boolean => {
+    if (kind === 'video' && f.size > MAX_VIDEO_BYTES) {
+      setProofError('That video is over 25 MB. Record a shorter clip.');
+      return false;
+    }
+    setProofError('');
+    if (proofPreviewUrl) URL.revokeObjectURL(proofPreviewUrl);
+    setProofFile(f);
+    setProofMediaType(kind);
+    setProofPreviewUrl(URL.createObjectURL(f));
+    return true;
+  };
+
+  const handlePickProof = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const kind: 'photo' | 'video' = f.type.startsWith('video/') ? 'video' : 'photo';
+    if (!acceptProof(f, kind)) e.target.value = '';
+  };
+
+  const handleConfirmResolution = async () => {
+    if (!selectedIssueId || !proofFile) return;
     setIsResolving(true);
-
-    const uploadedProofMedia = proofMediaIndex !== null 
-      ? MOCK_PROOF_IMAGES[proofMediaIndex] 
-      : 'https://images.unsplash.com/photo-1590348697210-282d9f48ac62?auto=format&fit=crop&w=400&q=80';
-
-    setTimeout(() => {
-      onUpdateStatus(selectedIssueId, 'RESOLVED', uploadedProofMedia);
+    setProofError('');
+    try {
+      // Reuse the existing /api/upload path (same validation/sniff/storage).
+      const form = new FormData();
+      form.append('photo', proofFile);
+      const res = await authedFetch('/api/upload', { method: 'POST', body: form });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.mediaUrl) throw new Error(data.error || 'Proof upload failed.');
+      const kind: 'photo' | 'video' = data.mediaType === 'video' ? 'video' : 'photo';
+      await onUpdateStatus(selectedIssueId, 'RESOLVED', data.mediaUrl, kind);
+      closeResolveModal();
+    } catch (err: any) {
+      setProofError(err?.message || 'Could not certify proof. Please try again.');
+    } finally {
       setIsResolving(false);
-      setSelectedIssueId(null);
-    }, 1500);
+    }
   };
 
   return (
@@ -288,38 +331,69 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
                 <p className="text-[11px] text-ink-soft max-w-[240px] mx-auto">We upload complete evidentiary completion photographs to transparent case log.</p>
               </div>
 
-              {/* simulated file picker */}
+              {/* Real proof capture/upload — in-app camera (reused CameraCapture)
+                  + gallery/file picker, both feeding the same /api/upload path. */}
               <div className="space-y-2">
-                <span className="text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-widest block">Select Simulated Proof Photo:</span>
-                <div className="grid grid-cols-4 gap-2">
-                  {MOCK_PROOF_IMAGES.map((img, index) => (
+                <span className="text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-widest block">Attach completion evidence:</span>
+
+                <input
+                  ref={proofInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  onChange={handlePickProof}
+                  className="hidden"
+                />
+
+                {proofPreviewUrl && (
+                  <div className="relative w-full h-36 rounded-[8px] overflow-hidden border border-hairline">
+                    {proofMediaType === 'video' ? (
+                      <video src={proofPreviewUrl} controls playsInline muted className="w-full h-full object-cover bg-ink" />
+                    ) : (
+                      <img src={proofPreviewUrl} alt="Selected proof" className="w-full h-full object-cover" />
+                    )}
+                  </div>
+                )}
+
+                <div className={cameraSupported ? 'grid grid-cols-2 gap-2' : ''}>
+                  {cameraSupported && (
                     <button
-                      key={index}
-                      onClick={() => setProofMediaIndex(index)}
-                      className={`h-14 bg-zinc-100 rounded-[6px] relative overflow-hidden border-2 ${proofMediaIndex === index ? 'border-civic ring-2 ring-civic-tint' : 'border-transparent'}`}
+                      type="button"
+                      onClick={() => setShowCamera(true)}
+                      className="bg-white border border-dashed border-zinc-300 rounded-[8px] py-4 text-[10px] font-mono font-bold text-ink-soft hover:text-ink hover:border-civic flex flex-col items-center gap-1 transition-all"
                     >
-                      <img src={img} alt="proof option" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                      {proofMediaIndex === index && (
-                        <div className="absolute inset-0 bg-civic/50 flex items-center justify-center">
-                          <Check className="w-4 h-4 text-white" />
-                        </div>
-                      )}
+                      <Camera className="w-5 h-5 text-zinc-400" />
+                      {proofPreviewUrl ? 'Retake' : 'Take photo/video'}
                     </button>
-                  ))}
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => proofInputRef.current?.click()}
+                    className={`bg-white border border-dashed border-zinc-300 rounded-[8px] ${cameraSupported ? 'py-4' : 'py-5 w-full'} text-[10px] font-mono font-bold text-ink-soft hover:text-ink hover:border-civic flex flex-col items-center gap-1 transition-all`}
+                  >
+                    <ImagePlus className="w-5 h-5 text-zinc-400" />
+                    {proofPreviewUrl ? 'Change / upload' : 'Upload from files'}
+                  </button>
                 </div>
+
+                {proofError && (
+                  <div className="flex gap-1.5 items-start bg-amber-50 border border-amber-200 rounded-[6px] p-2 text-[10px] text-amber-800">
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                    <span>{proofError}</span>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setSelectedIssueId(null)}
+                  onClick={closeResolveModal}
                   className="flex-1 bg-zinc-100 border border-hairline py-2.5 text-[10px] font-mono font-bold uppercase tracking-wider rounded-[6px] text-zinc-500 hover:bg-zinc-200 transition-all"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
-                  disabled={proofMediaIndex === null || isResolving}
+                  disabled={!proofFile || isResolving}
                   onClick={handleConfirmResolution}
                   className="flex-1 bg-civic text-white py-2.5 text-[10px] font-mono font-bold uppercase tracking-wider rounded-[6px] hover:bg-civic-deep disabled:bg-zinc-200 disabled:text-zinc-400 hover:shadow transition-all flex items-center justify-center gap-1.5"
                 >
@@ -340,6 +414,15 @@ export const AuthorityDashboard: React.FC<AuthorityDashboardProps> = ({ issues, 
           </div>
         )}
       </AnimatePresence>
+
+      {/* In-app camera for proof capture — reuses the citizen flow's component. */}
+      {showCamera && (
+        <CameraCapture
+          onCapture={(f, kind) => { acceptProof(f, kind); setShowCamera(false); }}
+          onCancel={() => setShowCamera(false)}
+          onRequestUpload={() => { setShowCamera(false); proofInputRef.current?.click(); }}
+        />
+      )}
 
     </div>
   );

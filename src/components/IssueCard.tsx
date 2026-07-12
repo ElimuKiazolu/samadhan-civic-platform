@@ -2,6 +2,7 @@ import React from 'react';
 import { CivicIssue } from '../types';
 import { MapPin, Users, MessageSquare, ShieldAlert, Play } from 'lucide-react';
 import { motion } from 'motion/react';
+import { SetuBadge } from './SetuBadge';
 
 interface IssueCardProps {
   issue: CivicIssue;
@@ -115,10 +116,10 @@ export const IssueCard: React.FC<IssueCardProps> = ({ issue, onSelect }) => {
           </div>
         </div>
 
-        {/* One-line Agent Status */}
+        {/* One-line Agent Status — badged so it reads as Setu, not a neighbour. */}
         {issue?.agentStatus && (
-          <div className="bg-civic-tint/70 border-l-2 border-civic p-2 text-[10px] flex items-start gap-1.5 rounded-r-[4px]">
-            <span className="text-civic font-mono font-bold leading-none select-none">⬡</span>
+          <div className="bg-civic-tint/70 border-l-2 border-civic p-2 text-[10px] flex items-center gap-1.5 rounded-r-[4px]">
+            <SetuBadge size="xs" />
             <span className="text-ink-soft font-mono leading-tight truncate">{issue?.agentStatus || ''}</span>
           </div>
         )}
