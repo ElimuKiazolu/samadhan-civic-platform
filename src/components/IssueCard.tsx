@@ -101,6 +101,10 @@ export const IssueCard: React.FC<IssueCardProps> = ({ issue, onSelect }) => {
             <MapPin className="w-3.5 h-3.5 text-civic flex-shrink-0" />
             <span className="truncate">{issue?.location || ''}</span>
             <span className="bg-zinc-100 px-1 py-0.5 rounded-[3px] text-[10px] font-mono shrink-0">{issue?.ward || ''}</span>
+            {/* City routing corporation — makes multi-city visible at a glance. */}
+            <span className="bg-civic-tint text-civic-deep px-1 py-0.5 rounded-[3px] text-[10px] font-mono font-bold shrink-0" title={issue?.corporationName || 'Rajkot Municipal Corporation'}>
+              {issue?.corporationShort || 'RMC'}
+            </span>
           </div>
           <div className="flex items-center gap-3 shrink-0 pl-2">
             <div className="flex items-center gap-1 text-civic-deep font-semibold">

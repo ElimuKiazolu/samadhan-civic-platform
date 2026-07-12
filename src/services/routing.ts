@@ -1,7 +1,10 @@
-// Real RMC routing + escalation ladder.
-// Maps each triage category to its owning Rajkot Municipal Corporation department
-// (Doc 4 §13) and builds the real 4-tier escalation ladder (Doc 4 §13 / Doc 5 §6)
-// that the SLA sentinel will climb. Attached to each issue on validation.
+// City-agnostic routing + shared Gujarat escalation ladder.
+// Maps each triage category to its owning municipal-corporation department (from
+// the per-city registry in cities.ts) and builds the real 4-tier escalation ladder
+// (Doc 4 §13 / Doc 5 §6) the SLA sentinel climbs. Attached to each issue on
+// validation. Defaults to Rajkot (RMC) when no city is supplied.
+
+import { getCity, DEFAULT_CITY_ID } from "../lib/cities";
 
 export type IssueCategory =
   | "Roads/Potholes"
@@ -47,76 +50,57 @@ function inboxFor(departmentId: string, tier: number): string {
   return `${user}+${departmentId}.t${tier}@${domain}`;
 }
 
-// Category → RMC department (Doc 4 §13).
-const DEPARTMENTS: Record<IssueCategory, DepartmentDef> = {
-  "Roads/Potholes": {
-    departmentId: "bandhkam",
-    name: "Bandhkam (Roads & Buildings / Public Works)",
-    categories: ["Roads/Potholes"],
-    slaHours: 48,
-  },
-  "Streetlights": {
-    departmentId: "lighting",
-    name: "Street Light Department",
-    categories: ["Streetlights"],
-    slaHours: 48,
-  },
-  "Water": {
-    departmentId: "water",
-    name: "Water Supply / Water Works",
-    categories: ["Water"],
-    slaHours: 24,
-  },
-  "Garbage/Waste": {
-    departmentId: "swm",
-    name: "Solid Waste Management (S.W.M.) / Conservancy",
-    categories: ["Garbage/Waste"],
-    slaHours: 48,
-  },
-  "Drainage/Sewage": {
-    departmentId: "drainage",
-    name: "Drainage Department",
-    categories: ["Drainage/Sewage"],
-    slaHours: 24,
-  },
-  "Other": {
-    departmentId: "tp",
-    name: "Town Planning (T.P.) / General",
-    categories: ["Other"],
-    slaHours: 72,
-  },
-};
+// Category → department is now DATA (per city) in cities.ts. Routing looks it up
+// for the issue's resolved city; with no city it defaults to Rajkot (RMC), so the
+// legacy behaviour is byte-identical.
+
+// Rajkot's exact Tier-3 title — the default keeps buildEscalationLadder's output
+// unchanged for any caller that doesn't pass a per-corporation title (e.g. seed.ts).
+const DEFAULT_TIER3_TITLE = "Municipal Commissioner (Second Appellate Officer) / Mayor";
 
 /**
- * Builds the real 4-tier escalation ladder for a department + zone (Doc 4 §13):
+ * Builds the shared Gujarat 4-tier escalation ladder (Doc 4 §13). Tiers 2 and 4
+ * are state-statutory and city-agnostic; Tier 1 is parameterised by department and
+ * Tier 3 by the corporation (via `tier3Title`). The `tier3Title` default reproduces
+ * Rajkot's original string exactly, so existing 3-arg callers are unaffected.
  *   1. Department officer / HOD
- *   2. Deputy Municipal Commissioner (zone: East/West/Central)
- *   3. Municipal Commissioner (Second Appellate Officer) / Mayor
+ *   2. Deputy Municipal Commissioner (zone)
+ *   3. Municipal Commissioner / Mayor of the corporation
  *   4. State Grievance Appellate Authority — UD&UHD, Govt. of Gujarat
  */
-export function buildEscalationLadder(departmentId: string, departmentName: string, zone: string): EscalationTier[] {
+export function buildEscalationLadder(
+  departmentId: string,
+  departmentName: string,
+  zone: string,
+  tier3Title: string = DEFAULT_TIER3_TITLE
+): EscalationTier[] {
   const z = zone || "Central";
   return [
     { tier: 1, title: `${departmentName} — Head of Department (HOD)`, inbox: inboxFor(departmentId, 1) },
     { tier: 2, title: `Deputy Municipal Commissioner (${z} Zone)`, inbox: inboxFor(departmentId, 2) },
-    { tier: 3, title: `Municipal Commissioner (Second Appellate Officer) / Mayor`, inbox: inboxFor(departmentId, 3) },
+    { tier: 3, title: tier3Title, inbox: inboxFor(departmentId, 3) },
     { tier: 4, title: `State Grievance Appellate Authority — UD&UHD, Govt. of Gujarat`, inbox: inboxFor(departmentId, 4) },
   ];
 }
 
 /**
- * Routes a validated issue: resolves the owning department, attaches the real
- * 4-tier ladder, and computes the first SLA deadline. HIGH severity tightens the
- * SLA window so urgent hazards escalate sooner.
+ * Routes a validated issue for its CITY: resolves the owning department from that
+ * corporation, attaches the shared 4-tier ladder (Tier 3 named for the corporation),
+ * and computes the first SLA deadline. HIGH severity tightens the window.
+ *
+ * cityId is LAST + optional and defaults to Rajkot, so routeIssue(category, zone,
+ * severity, from) behaves exactly as before multi-city (zero regression).
  */
 export function routeIssue(
   category: IssueCategory,
   zone: string,
   severity: Severity,
-  from: Date = new Date()
+  from: Date = new Date(),
+  cityId: string = DEFAULT_CITY_ID
 ): RoutingResult {
-  const dept = DEPARTMENTS[category] || DEPARTMENTS["Other"];
-  const ladder = buildEscalationLadder(dept.departmentId, dept.name, zone);
+  const city = getCity(cityId);
+  const dept = city.departments[category] || city.departments["Other"];
+  const ladder = buildEscalationLadder(dept.departmentId, dept.name, zone, city.tier3Title);
   const slaHours = severity === "HIGH" ? Math.max(2, Math.round(dept.slaHours / 4)) : dept.slaHours;
   const slaDueAt = new Date(from.getTime() + slaHours * 3_600_000).toISOString();
 

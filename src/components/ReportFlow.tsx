@@ -5,6 +5,7 @@ import { motion } from 'motion/react';
 import { useAuth } from '../context/AuthContext';
 import { CameraCapture } from './CameraCapture';
 import { isCaptureSupported } from '../lib/capture';
+import { CITY_PRESETS } from '../lib/cities';
 
 export interface ReportResult {
   outcome: 'VALIDATED' | 'NEEDS_INFO' | 'REJECTED' | 'DUPLICATE';
@@ -567,6 +568,30 @@ export const ReportFlow: React.FC<ReportFlowProps> = ({ onClose, onPosted }) => 
                   <MapPin className="w-3 h-3" /> Location
                   {!hasCoords && <span className="text-amber-600 normal-case">· required to post</span>}
                 </label>
+
+                {/* DEMO: jump to a city centre so the report routes to that city's
+                    corporation (Rajkot→RMC, Ahmedabad→AMC, Surat→SMC). Multi-city
+                    demo aid — sets the coordinates the pipeline resolves the city from. */}
+                <div className="space-y-1">
+                  <span className="text-[9px] font-mono text-zinc-400 uppercase tracking-wider">Demo · jump to city</span>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {CITY_PRESETS.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setEditLat(c.lat.toFixed(6));
+                          setEditLng(c.lng.toFixed(6));
+                          setLocationSource('manual');
+                          setWardPick('');
+                        }}
+                        className="bg-white border border-hairline hover:border-civic rounded-[6px] py-1.5 text-[10px] font-mono font-bold text-ink-soft hover:text-civic transition-all"
+                      >
+                        {c.corporationShort}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                 {/* Primary: re-trigger GPS on a user gesture (fixes desktop). */}
                 <button
