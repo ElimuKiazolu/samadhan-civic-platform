@@ -9,6 +9,7 @@ import { dbService } from './src/services/db';
 import { resolveWardAndZone } from './src/lib/geohash';
 import { processTriagePipeline, classifyForPreview } from './src/services/triage';
 import { decideSetuReply } from './src/services/decorum';
+import { generateSuggestions } from './src/services/suggestions';
 import { runSentinel } from './src/services/sentinel';
 import { seedDemoBreachedIssue } from './src/services/seed';
 import { uploadIssueImage, UPLOADS_DIR } from './src/services/storage';
@@ -110,9 +111,11 @@ app.get('/api/issues/:id', async (req, res) => {
   }
 });
 
-// Post a citizen comment to an issue's thread (persisted to the comments
-// subcollection per Doc 5). After persisting, the decorum gate (rule-based, NO
-// Gemini call) decides whether Setu adds a fact-only reply or stays silent.
+// Post a comment to an issue's thread (persisted to the comments subcollection
+// per Doc 5). The commenter's VERIFIED role is stamped on the comment so the
+// thread renders three distinct voices — citizen, authority (official), Setu.
+// After a CITIZEN comment the decorum gate (rule-based, NO Gemini call) may add a
+// fact-only Setu reply; Setu never auto-replies to an official authority comment.
 app.post('/api/issues/:id/comments', socialLimiter, requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -124,27 +127,35 @@ app.post('/api/issues/:id/comments', socialLimiter, requireAuth, async (req, res
     const issue = await dbService.getIssueById(id);
     if (!issue) return res.status(404).json({ error: 'Dossier not found' });
 
-    const authorName = (user.email && user.email.split('@')[0]) || 'Citizen';
-    const citizenComment = await dbService.addComment(id, {
+    const isAuthority = user.role === 'authority';
+    const deptName = issue.departmentName || (user.departmentId ? `RMC ${user.departmentId}` : 'RMC Official');
+    const authorName = isAuthority
+      ? deptName
+      : (user.email && user.email.split('@')[0]) || 'Citizen';
+    const newComment = await dbService.addComment(id, {
       author: authorName,
       authorId: user.uid,
       isAgent: false,
+      authorRole: isAuthority ? 'authority' : 'citizen',
+      ...(isAuthority ? { departmentName: deptName } : {}),
       text: desc.value,
     });
 
-    // Decorum gate: reply ONLY when value-adding (and not back-to-back). The
-    // issue we loaded carries the current comment list for the debounce check.
+    // Decorum gate: reply ONLY to citizen comments, when value-adding and not
+    // back-to-back. Authority comments are official — Setu stays out of the way.
     let setuReply: any = null;
-    try {
-      const replyText = decideSetuReply(desc.value, issue);
-      if (replyText) {
-        setuReply = await dbService.addComment(id, { author: 'Setu', isAgent: true, text: replyText });
+    if (!isAuthority) {
+      try {
+        const replyText = decideSetuReply(desc.value, issue);
+        if (replyText) {
+          setuReply = await dbService.addComment(id, { author: 'Setu', isAgent: true, authorRole: 'agent', text: replyText });
+        }
+      } catch (gateErr) {
+        console.warn('Decorum gate failed (non-fatal, comment still saved):', gateErr);
       }
-    } catch (gateErr) {
-      console.warn('Decorum gate failed (non-fatal, comment still saved):', gateErr);
     }
 
-    res.status(201).json({ ok: true, comment: citizenComment, setuReply });
+    res.status(201).json({ ok: true, comment: newComment, setuReply });
   } catch (error: any) {
     console.error(`Error posting comment to ${req.params.id}:`, error);
     res.status(500).json({ error: 'Could not save your comment. Please try again.' });
@@ -222,6 +233,36 @@ app.post('/api/issues/:id/status', socialLimiter, requireAuth, requireRole('auth
   } catch (error: any) {
     console.error(`Error updating status for ${req.params.id}:`, error);
     res.status(500).json({ error: 'Could not update the case status. Please try again.' });
+  }
+});
+
+// Setu's on-demand fix suggestions for the authority dossier (Doc 4 agentic
+// depth). ON-DEMAND + CACHED: generated with Gemini the first time an authority
+// opens a case, then stored on the issue (setuSuggestions) so re-opening returns
+// the cache with NO further model call. Authority-only. Gracefully returns
+// suggestions:null if generation fails so the UI shows nothing, never a broken panel.
+app.post('/api/issues/:id/suggestions', socialLimiter, requireAuth, requireRole('authority'), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const issue = await dbService.getIssueById(id);
+    if (!issue) return res.status(404).json({ error: 'Dossier not found' });
+
+    // Cache hit — no Gemini call.
+    if (issue.setuSuggestions && issue.setuSuggestions.temporary && issue.setuSuggestions.permanent) {
+      return res.json({ ok: true, cached: true, suggestions: issue.setuSuggestions });
+    }
+
+    const generated = await generateSuggestions(issue);
+    if (!generated) {
+      return res.json({ ok: true, cached: false, suggestions: null });
+    }
+
+    const setuSuggestions = { ...generated, generatedAt: new Date().toISOString() };
+    await dbService.updateIssue(id, { setuSuggestions }); // cache for next open
+    res.json({ ok: true, cached: false, suggestions: setuSuggestions });
+  } catch (error: any) {
+    console.error(`Error generating suggestions for ${req.params.id}:`, error);
+    res.status(500).json({ error: 'Could not generate suggestions.' });
   }
 });
 

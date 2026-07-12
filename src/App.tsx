@@ -40,10 +40,15 @@ function hydrateIssue(issue: any): CivicIssue {
 }
 
 // Read-alert ids persist in localStorage so the bell's unread dot survives refresh.
-const READ_ALERTS_KEY = 'samadhan_read_alerts';
-function loadReadAlertIds(): Set<string> {
+// NAMESPACED PER USER so signing out/in doesn't lose (or leak) read state between
+// accounts. Logged-out browsing gets its own 'guest' bucket.
+const READ_ALERTS_PREFIX = 'samadhan_read_alerts';
+function readAlertsKey(uid?: string | null): string {
+  return `${READ_ALERTS_PREFIX}:${uid || 'guest'}`;
+}
+function loadReadAlertIds(uid?: string | null): Set<string> {
   try {
-    return new Set<string>(JSON.parse(localStorage.getItem(READ_ALERTS_KEY) || '[]'));
+    return new Set<string>(JSON.parse(localStorage.getItem(readAlertsKey(uid)) || '[]'));
   } catch {
     return new Set<string>();
   }
@@ -71,8 +76,13 @@ export default function App() {
     else { setSignInReason(reason); setShowSignIn(true); }
   };
 
-  // Alert read-state (localStorage).
+  // Alert read-state (localStorage), namespaced by the current user's uid. Loaded
+  // for 'guest' initially and reloaded whenever the signed-in user changes so the
+  // bell's unread dot reflects THIS user's read history across logout/login.
   const [readAlertIds, setReadAlertIds] = useState<Set<string>>(() => loadReadAlertIds());
+  useEffect(() => {
+    setReadAlertIds(loadReadAlertIds(user?.uid));
+  }, [user?.uid]);
 
   // Bootstrap the user profile (Doc 5 users/{uid}) once per sign-in.
   useEffect(() => {
@@ -96,7 +106,7 @@ export default function App() {
     setReadAlertIds((prev) => {
       const next = new Set(prev);
       alerts.forEach((a) => next.add(a.id));
-      try { localStorage.setItem(READ_ALERTS_KEY, JSON.stringify([...next])); } catch {}
+      try { localStorage.setItem(readAlertsKey(user?.uid), JSON.stringify([...next])); } catch {}
       return next;
     });
   };
@@ -352,6 +362,7 @@ export default function App() {
                   issues={issues}
                   onUpdateStatus={handleUpdateStatus}
                   onRefresh={refreshIssues}
+                  onSelectIssue={selectIssue}
                 />
               )}
           </>

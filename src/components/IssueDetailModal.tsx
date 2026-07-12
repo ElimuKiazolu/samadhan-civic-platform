@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CivicIssue, Comment, CaseLogLine } from '../types';
-import { X, Map, Users, Send, Check, AlertTriangle, ChevronDown, ChevronUp, Clock } from 'lucide-react';
+import { CivicIssue, Comment, CaseLogLine, SetuSuggestions } from '../types';
+import { X, Map, Users, Send, Check, AlertTriangle, ChevronDown, ChevronUp, Clock, ShieldAlert, Wrench, FileText, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getStatusColors } from './IssueCard';
 import { useAuth } from '../context/AuthContext';
 import { IssueMapModal } from './IssueMapModal';
 import { SetuBadge, SetuMessage } from './SetuBadge';
+import { AuthorityMessage } from './AuthorityMessage';
 
 interface IssueDetailModalProps {
   issue: CivicIssue;
@@ -25,9 +26,16 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
   onRefreshDetail,
   onRequireAuth,
 }) => {
-  const { user, authedFetch } = useAuth();
+  const { user, role, authedFetch } = useAuth();
+  const isAuthority = role === 'authority';
   const [isCaseLogOpen, setIsCaseLogOpen] = useState(true);
   const [showMap, setShowMap] = useState(false);
+
+  // Setu's on-demand fix suggestions (authority dossier only). Generated the first
+  // time an authority opens a case and cached on the issue, so re-opens render the
+  // cache with no further Gemini call.
+  const [suggestions, setSuggestions] = useState<SetuSuggestions | null>(issue.setuSuggestions || null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [sending, setSending] = useState(false);
   const [corroborated, setCorroborated] = useState(issue.isUserCorroborated || false);
@@ -59,6 +67,28 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
       }
     }
   }, [visibleLinesCount, isStreaming, isCaseLogOpen, issue.caseLog]);
+
+  // Reset suggestions to whatever the (possibly cached) issue carries when the
+  // open dossier changes.
+  useEffect(() => {
+    setSuggestions(issue.setuSuggestions || null);
+  }, [issue.id, issue.setuSuggestions]);
+
+  // On-demand generation: ONLY authorities trigger it, ONLY once per open, and
+  // ONLY when nothing is cached. On failure we simply render nothing (graceful).
+  useEffect(() => {
+    if (!isAuthority) return;
+    if (suggestions || issue.setuSuggestions) return;
+    let cancelled = false;
+    setSuggestLoading(true);
+    authedFetch(`/api/issues/${issue.id}/suggestions`, { method: 'POST' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (!cancelled && data) setSuggestions(data.suggestions || null); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setSuggestLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthority, issue.id]);
 
   const handleCorroborateClick = () => {
     if (corroborated) return;
@@ -216,7 +246,74 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                 <Map className="w-3.5 h-3.5" /> Map View
               </button>
             </div>
+
+            {/* Category / severity / corroboration meta + full description. */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider bg-zinc-100 text-ink-soft px-2 py-0.5 rounded-[3px]">
+                {issue.category}
+              </span>
+              <span className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-[3px] text-white ${issue.severity === 'HIGH' ? 'bg-st-stalled' : issue.severity === 'LOW' ? 'bg-st-new' : 'bg-st-escalate'}`}>
+                {issue.severity}
+              </span>
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider bg-civic-tint text-civic-deep px-2 py-0.5 rounded-[3px] flex items-center gap-1">
+                <Users className="w-3 h-3" /> {localConfirmedCount ?? issue.confirmedCount ?? 0} confirmed
+              </span>
+            </div>
+            {issue.description && (
+              <p className="text-xs text-ink-soft leading-relaxed font-mono bg-white border border-hairline rounded-[8px] p-3">
+                {issue.description}
+              </p>
+            )}
           </div>
+
+          {/* ── AUTHORITY DOSSIER (officials only) ─────────────────────────────
+              Setu's recommended fixes + the drafted RMC complaint. Reuses the
+              shared media/map/timeline/case-log sections below for the rest. */}
+          {isAuthority && (
+            <div className="space-y-3">
+              {/* Setu's suggested fixes — distinct ⬡ SETU treatment. */}
+              {(suggestLoading || suggestions) && (
+                <div className="bg-gradient-to-br from-civic-tint to-civic-tint/30 border border-civic/40 border-l-[3px] border-l-civic rounded-[10px] p-3 space-y-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <SetuBadge />
+                    <span className="text-[10px] font-mono font-bold text-civic-deep uppercase tracking-wider">Recommended action</span>
+                  </div>
+                  {suggestLoading && !suggestions ? (
+                    <div className="flex items-center gap-2 text-[11px] font-mono text-civic-deep/70 py-1">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" /> Setu is assessing the case…
+                    </div>
+                  ) : suggestions ? (
+                    <div className="space-y-2.5">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono font-black uppercase tracking-wider text-st-escalate">
+                          <ShieldAlert className="w-3.5 h-3.5" /> Temporary mitigation
+                        </div>
+                        <p className="text-xs text-ink font-mono leading-relaxed">{suggestions.temporary}</p>
+                      </div>
+                      <div className="space-y-1 pt-1 border-t border-civic/20">
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono font-black uppercase tracking-wider text-civic-deep">
+                          <Wrench className="w-3.5 h-3.5" /> Permanent solution
+                        </div>
+                        <p className="text-xs text-ink font-mono leading-relaxed">{suggestions.permanent}</p>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Drafted RMC complaint (denormalised from the dispatch record). */}
+              {issue.complaintDraft && (
+                <details className="bg-white border border-hairline rounded-[10px] overflow-hidden">
+                  <summary className="cursor-pointer select-none px-3 py-2.5 flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-widest text-ink-soft hover:bg-zinc-50">
+                    <FileText className="w-3.5 h-3.5 text-civic" /> Drafted RMC complaint
+                  </summary>
+                  <p className="px-3 pb-3 text-xs text-ink-soft font-mono leading-relaxed whitespace-pre-wrap border-t border-hairline pt-2.5">
+                    {issue.complaintDraft}
+                  </p>
+                </details>
+              )}
+            </div>
+          )}
 
           {/* Case Lifecycle Timeline */}
           <div className="bg-white border border-hairline rounded-[12px] p-4 space-y-3">
@@ -340,10 +437,14 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
                 <p className="text-zinc-400 italic text-xs py-2 text-center">No commentary on dossier yet. Enter response below to trigger Setu.</p>
               ) : (
                 (issue.comments || []).map((comment) =>
-                  comment.isAgent ? (
-                    // Setu speaks as a first-class agent — distinct card chrome.
+                  comment.isAgent || comment.authorRole === 'agent' ? (
+                    // Setu — first-class agent, civic-teal bubble.
                     <SetuMessage key={comment.id} text={comment.text} time={comment.time} />
+                  ) : comment.authorRole === 'authority' ? (
+                    // RMC official — stamped municipal memo (third distinct voice).
+                    <AuthorityMessage key={comment.id} department={comment.departmentName || comment.author} text={comment.text} time={comment.time} />
                   ) : (
+                    // Citizen — neutral card.
                     <div
                       key={comment.id}
                       className="p-3 rounded-[8px] flex flex-col gap-1 bg-white border border-hairline"
@@ -373,7 +474,7 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
             value={commentText}
             onChange={(e) => setCommentText(e.target.value)}
             disabled={sending}
-            placeholder={sending ? 'Posting…' : 'Add to transparent civic record...'}
+            placeholder={sending ? 'Posting…' : isAuthority ? 'Post an official RMC response…' : 'Add to transparent civic record...'}
             className="flex-1 text-xs border border-hairline rounded-[6px] px-3.5 py-2 focus:outline-none focus:border-civic font-mono disabled:opacity-60"
           />
           <button

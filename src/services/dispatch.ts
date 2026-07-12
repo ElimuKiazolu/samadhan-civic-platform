@@ -127,9 +127,10 @@ export async function dispatchComplaint(
     text: `complaint dispatched → ${target?.title || issue.departmentName || "RMC department"} (demo inbox)`,
   });
 
-  // State transition → ESCALATED at this tier.
+  // State transition → ESCALATED at this tier. Denormalise the latest complaint
+  // draft onto the issue so the authority dossier can show it without a join.
   const agentStatus = `Setu: Complaint dispatched to ${target?.title || issue.departmentName || "RMC department"}. Awaiting acknowledgement.`;
-  await dbService.updateIssue(issue.id, { status: "ESCALATED", escalationTier: tier, agentStatus });
+  await dbService.updateIssue(issue.id, { status: "ESCALATED", escalationTier: tier, agentStatus, complaintDraft: body });
   await dbService.addStatusHistory(issue.id, {
     status: "ESCALATED",
     note: `Complaint dispatched to ${target?.title || issue.departmentName || "RMC department"} (Tier ${tier})`,
