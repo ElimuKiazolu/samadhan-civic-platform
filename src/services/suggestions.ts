@@ -27,22 +27,34 @@ export async function generateSuggestions(issue: any): Promise<FixSuggestions | 
   const imagePart = issue.mediaType === "video" ? null : await loadImagePart(issue.mediaUrl);
   const hasImage = !!imagePart;
 
-  const prompt = `You are Setu, an autonomous municipal-works advisor for the Rajkot Municipal Corporation (RMC). An RMC officer has opened this civic case. Recommend two concrete, practical actions grounded ONLY in the details given — do not invent facts, measurements, budgets, or contractors.
+  const prompt = `You are Setu, a field-operations advisor for a municipal corporation in India (public works / city engineering). A city officer has opened this civic case and needs two practical work-order recommendations for PHYSICAL, on-the-ground municipal action.
+
+Decide what to recommend from the CATEGORY, the SEVERITY, the site PHOTO, and the LOCATION — these are authoritative. The citizen's words are only a rough hint and may be vague, misspelled, or meaningless test text; if they do not describe a real physical civic problem, IGNORE them entirely and reason from the category (and photo) alone. Never quote or echo the citizen's wording.
 
 CASE:
-- Category: ${issue.category}
+- Category: ${issue.category}   (one of: Roads/Potholes, Streetlights, Water, Garbage/Waste, Drainage/Sewage, Other Infrastructure)
 - Severity: ${issue.severity}
-- Title: ${issue.title}
-- Citizen description: "${issue.description || issue.title}"
-- Location: ${issue.ward || "an RMC ward"}, ${issue.zone || "Central"} Zone
-- Corroborating reports: ${issue.confirmedCount || 1}
-${hasImage ? "- A site photo is attached below; use it to inform the recommendation." : "- No photo attached; advise from the text alone."}
+- Location: ${issue.ward || "a city ward"}, ${issue.zone || "Central"} Zone
+- Citizen hint (may be unreliable — treat with suspicion): "${issue.description || issue.title}"
+${hasImage ? "- A site photo is attached below — treat it as the PRIMARY evidence of what is physically wrong." : "- No photo attached — reason from the category alone."}
 
-Provide:
-1. temporary — an immediate MITIGATION the field crew can do within hours to reduce danger/severity and buy time (e.g. cordoning, cones/barricades, warning signage, a temporary patch, diverting flow). 1–2 sentences, action-first, civic-appropriate.
-2. permanent — the proper long-term REPAIR that resolves the root cause (e.g. full-depth road reinstatement, pipeline replacement, drain de-silting + relining, luminaire + wiring replacement). 1–2 sentences.
+HARD RULES:
+- These are PHYSICAL civic works in a real Indian city — crews, materials, vehicles, equipment.
+- NEVER propose software, IT, data, code, apps, "systems", "displays", configuration, or "investigating a project". This is NOT a software ticket.
+- Do NOT mention the reporting app, "the report", "the system", "the project", "data", or "display", and do NOT restate the citizen's text.
+- Be concrete and operational, the way a public-works engineer writes a work order. No hedging, no preamble, no markdown, no invented measurements/budgets/contractors.
 
-Keep both specific to THIS category and severity. No preamble, no markdown, no fabricated specifics.`;
+Write:
+1. temporary — what a field crew can do within 24–48 hours to reduce danger/nuisance and buy time. Physical actions only (barricades, traffic cones, warning signage, a sanitation crew, a cold-mix patch, a portable light, a temporary bin, sandbags, pumping standing water). 1–2 sentences.
+2. permanent — the proper municipal repair / programmatic fix that resolves the root cause (e.g. full-depth resurfacing, replacing the fixture and auditing the feeder circuit, adding the spot to the collection route, repairing/replacing the pipeline, desilting and relining the drain), with a nod to the underlying cause. 1–2 sentences.
+
+Examples of the RIGHT register:
+- Garbage/Waste → temporary: "Dispatch a sanitation crew to clear the accumulated waste and place a covered community bin at the spot to stop open dumping." permanent: "Add this location to the daily door-to-door collection route and install a fixed skip-bin, with periodic monitoring to prevent recurrence."
+- Roads/Potholes → temporary: "Barricade the crater and fill it with a cold-mix asphalt patch, with reflective warning signage for oncoming two-wheelers." permanent: "Schedule full-depth reinstatement of the failed section and inspect the sub-surface drainage undermining the carriageway."
+- Streetlights → temporary: "Deploy a portable solar mast light to restore night-time visibility at the junction." permanent: "Replace the failed luminaire and audit the feeder circuit and pole wiring for the recurring fault."
+- Water → temporary: "Send a valve crew to isolate the leaking line and arrange a tanker to maintain supply to affected households." permanent: "Excavate and replace the corroded pipeline segment and pressure-test the distribution main."
+
+Output ONLY the JSON with the two fields.`;
 
   try {
     const ai = getGeminiClient();
