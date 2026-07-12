@@ -12,7 +12,7 @@ import { decideSetuReply } from './src/services/decorum';
 import { runSentinel } from './src/services/sentinel';
 import { seedDemoBreachedIssue } from './src/services/seed';
 import { uploadIssueImage, UPLOADS_DIR } from './src/services/storage';
-import { requireAuth, requireRole, currentUser } from './src/services/auth';
+import { requireAuth, requireRole, requireDepartment, currentUser } from './src/services/auth';
 import {
   sanitizeDescription,
   sanitizeTitle,
@@ -162,6 +162,66 @@ app.post('/api/issues/:id/corroborate', socialLimiter, requireAuth, async (req, 
   } catch (error: any) {
     console.error(`Error corroborating ${req.params.id}:`, error);
     res.status(500).json({ error: 'Could not record your confirmation. Please try again.' });
+  }
+});
+
+// Authority case action — persists a status transition (Doc 4 §7). Handles the
+// "Acknowledge" (IN_PROGRESS) and "Resolve with proof" (RESOLVED) transitions.
+// For RESOLVED it stores the proof media in a SEPARATE field (never overwriting
+// the citizen's original evidence mediaUrl), writes status history + a Setu case-
+// log line, and posts a fact-only Setu resolution comment templated from real
+// fields. The resolution then derives a citizen alert from the feed (alerts.ts).
+// Department-scoped when the issue carries a departmentId.
+app.post('/api/issues/:id/status', socialLimiter, requireAuth, requireRole('authority'), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const user = currentUser(req)!;
+    const issue = await dbService.getIssueById(id);
+    if (!issue) return res.status(404).json({ error: 'Dossier not found' });
+    // Enforce department ownership (no-op when the issue has no departmentId).
+    if (!requireDepartment(req, res, issue)) return; // 403 already sent
+
+    const nextStatus = String(req.body.status || '').toUpperCase();
+    if (nextStatus !== 'IN_PROGRESS' && nextStatus !== 'RESOLVED') {
+      return res.status(400).json({ error: 'Unsupported status transition.' });
+    }
+
+    const deptName = issue.departmentName || (user.departmentId ? `RMC ${user.departmentId}` : 'the RMC department');
+
+    if (nextStatus === 'IN_PROGRESS') {
+      await dbService.updateIssue(id, {
+        status: 'IN_PROGRESS',
+        agentStatus: `Setu: Acknowledged by ${deptName}. Crew assigned.`,
+      });
+      await dbService.addStatusHistory(id, { status: 'IN_PROGRESS', note: `${deptName} acknowledged the case and queued deployment.` });
+      await dbService.addCaseLog(id, { glyph: '✓', kind: 'action', text: `case acknowledged………… ${deptName} crew assigned` });
+    } else {
+      // RESOLVED — proof stored separately; original evidence (mediaUrl) untouched.
+      const proofUrl = typeof req.body.proofUrl === 'string' && req.body.proofUrl.trim() ? req.body.proofUrl.trim() : '';
+      const proofMediaType = normalizeMediaType(req.body.proofMediaType);
+      const resolvedAt = new Date().toISOString();
+      await dbService.updateIssue(id, {
+        status: 'RESOLVED',
+        resolvedAt,
+        resolvedBy: deptName,
+        ...(proofUrl ? { proofUrl, proofMediaType } : {}),
+        agentStatus: `Setu: Resolved by ${deptName}.${proofUrl ? ' Proof on file.' : ''}`,
+      });
+      await dbService.addStatusHistory(id, { status: 'RESOLVED', note: `${deptName} marked resolved${proofUrl ? ' with completion proof' : ''}.` });
+      await dbService.addCaseLog(id, { glyph: '✓', kind: 'action', text: `case resolved…………… ${deptName}${proofUrl ? ' · proof attached' : ''}` });
+      // Fact-only Setu comment — never fabricates a fix, only relays the record.
+      await dbService.addComment(id, {
+        author: 'Setu',
+        isAgent: true,
+        text: `${deptName} marked this resolved${proofUrl ? ' — proof attached above' : ''}. Current status: RESOLVED. If the problem persists, report it again so I can re-open it.`,
+      });
+    }
+
+    const updated = await dbService.getIssueById(id);
+    res.json({ ok: true, issue: updated });
+  } catch (error: any) {
+    console.error(`Error updating status for ${req.params.id}:`, error);
+    res.status(500).json({ error: 'Could not update the case status. Please try again.' });
   }
 });
 

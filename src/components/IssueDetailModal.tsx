@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { getStatusColors } from './IssueCard';
 import { useAuth } from '../context/AuthContext';
 import { IssueMapModal } from './IssueMapModal';
+import { SetuBadge, SetuMessage } from './SetuBadge';
 
 interface IssueDetailModalProps {
   issue: CivicIssue;
@@ -166,6 +167,32 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
             </div>
           </div>
 
+          {/* Resolution proof — the payoff. Shown only when resolved with proof;
+              a SEPARATE panel from the original evidence hero above (before/after). */}
+          {issue.status === 'RESOLVED' && issue.proofUrl && (
+            <div className="bg-st-resolved/5 border border-st-resolved/30 rounded-[12px] p-4 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold uppercase tracking-widest font-mono text-st-resolved flex items-center gap-1.5">
+                  <Check className="w-3.5 h-3.5" /> Resolution Proof
+                </h3>
+                {issue.resolvedBy && (
+                  <span className="text-[10px] font-mono text-ink-soft">{issue.resolvedBy}</span>
+                )}
+              </div>
+              <div className="h-44 rounded-[10px] overflow-hidden border border-hairline bg-ink">
+                {issue.proofMediaType === 'video' ? (
+                  <video src={issue.proofUrl} controls playsInline preload="metadata" className="w-full h-full object-cover" />
+                ) : (
+                  <img src={issue.proofUrl} alt="Resolution proof" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                )}
+              </div>
+              <p className="text-[10px] font-mono text-ink-soft leading-relaxed">
+                Completion evidence uploaded by the responsible department.
+                {issue.resolvedAt && ` · ${new Date(issue.resolvedAt).toLocaleDateString()}`}
+              </p>
+            </div>
+          )}
+
           {/* Title and metadata */}
           <div className="space-y-2">
             <div className="flex justify-between items-baseline">
@@ -230,8 +257,9 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
             >
               <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full ${isStreaming ? 'bg-orange-500 animate-pulse' : 'bg-green-500'}`}></div>
+                <SetuBadge size="xs" />
                 <span className="text-[11px] font-mono font-bold tracking-widest uppercase text-zinc-300">
-                  Setu's Case Log {isStreaming && '[STREAMING]'}
+                  Case Log {isStreaming && '[STREAMING]'}
                 </span>
               </div>
               {isCaseLogOpen ? <ChevronUp className="w-4 h-4 text-zinc-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
@@ -311,27 +339,25 @@ export const IssueDetailModal: React.FC<IssueDetailModalProps> = ({
               {(issue.comments || []).length === 0 ? (
                 <p className="text-zinc-400 italic text-xs py-2 text-center">No commentary on dossier yet. Enter response below to trigger Setu.</p>
               ) : (
-                (issue.comments || []).map((comment) => (
-                  <div
-                    key={comment.id}
-                    className={`p-3 rounded-[8px] flex flex-col gap-1 transition-all ${
-                      comment.isAgent
-                        ? 'bg-civic-tint/90 border-l-[3px] border-civic ml-4 self-end'
-                        : 'bg-white border border-hairline'
-                    }`}
-                  >
-                    <div className="flex justify-between items-baseline">
-                      <div className="flex items-center gap-1.5 font-bold text-xs">
-                        {comment.isAgent && <span className="text-civic select-none font-bold">⬡</span>}
-                        <span className={comment.isAgent ? 'text-civic-deep' : 'text-ink font-semibold'}>
-                          {comment.author} {comment.isAgent && '(Setu AI agent)'}
-                        </span>
+                (issue.comments || []).map((comment) =>
+                  comment.isAgent ? (
+                    // Setu speaks as a first-class agent — distinct card chrome.
+                    <SetuMessage key={comment.id} text={comment.text} time={comment.time} />
+                  ) : (
+                    <div
+                      key={comment.id}
+                      className="p-3 rounded-[8px] flex flex-col gap-1 bg-white border border-hairline"
+                    >
+                      <div className="flex justify-between items-baseline">
+                        <div className="flex items-center gap-1.5 font-bold text-xs">
+                          <span className="text-ink font-semibold">{comment.author}</span>
+                        </div>
+                        <span className="text-[10px] font-mono text-zinc-400">{comment.time}</span>
                       </div>
-                      <span className="text-[10px] font-mono text-zinc-400">{comment.time}</span>
+                      <p className="text-xs text-ink-soft font-mono leading-relaxed">{comment.text}</p>
                     </div>
-                    <p className="text-xs text-ink-soft font-mono leading-relaxed">{comment.text}</p>
-                  </div>
-                ))
+                  )
+                )
               )}
             </div>
           </div>

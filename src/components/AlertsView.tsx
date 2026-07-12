@@ -2,6 +2,7 @@ import React from 'react';
 import { ShieldAlert, Bell, Radio, CheckSquare, MessageSquare } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Alert } from '../lib/alerts';
+import { SetuBadge } from './SetuBadge';
 
 interface AlertsViewProps {
   alerts: Alert[];
@@ -42,7 +43,7 @@ export const AlertsView: React.FC<AlertsViewProps> = ({ alerts, readIds }) => {
               icon = <ShieldAlert className="w-4 h-4 text-st-stalled" />;
             } else if (alert.type === 'agent') {
               typeColor = 'border-l-civic bg-civic-tint/30';
-              icon = <span className="text-civic font-mono font-bold leading-none select-none">⬡</span>;
+              icon = <SetuBadge size="xs" />;
             } else if (alert.type === 'success') {
               typeColor = 'border-l-st-resolved bg-green-50/30';
               icon = <CheckSquare className="w-4 h-4 text-st-resolved" />;
@@ -79,6 +80,15 @@ export const AlertsView: React.FC<AlertsViewProps> = ({ alerts, readIds }) => {
                 <p className="text-[11px] text-ink-soft leading-relaxed font-mono">
                   {alert.description}
                 </p>
+                {alert.proofUrl && (
+                  <div className="mt-1.5 h-24 rounded-[8px] overflow-hidden border border-hairline bg-ink">
+                    {alert.proofMediaType === 'video' ? (
+                      <video src={alert.proofUrl} muted playsInline preload="metadata" className="w-full h-full object-cover" />
+                    ) : (
+                      <img src={alert.proofUrl} alt="Resolution proof" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                    )}
+                  </div>
+                )}
               </motion.div>
             );
           })
