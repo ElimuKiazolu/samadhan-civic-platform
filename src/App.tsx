@@ -8,6 +8,7 @@ import { AlertsView } from './components/AlertsView';
 import { YouProfile } from './components/YouProfile';
 import { ImpactDashboard } from './components/ImpactDashboard';
 import { SignInScreen } from './components/SignInScreen';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { useAuth } from './context/AuthContext';
 import { deriveAlerts } from './lib/alerts';
 import { Radio, Users, Bell, User, Plus, ShieldAlert, SlidersHorizontal, MapPin, Eye, CheckCircle2, BarChart3, LogOut } from 'lucide-react';
@@ -55,6 +56,7 @@ export default function App() {
   const [selectedIssue, setSelectedIssue] = useState<CivicIssue | null>(null);
   const [activeTab, setActiveTab] = useState<'feed' | 'impact' | 'alerts' | 'you' | 'authority'>('feed');
   const [isReporting, setIsReporting] = useState(false);
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
 
   // Role + identity come from VERIFIED Firebase claims (no self-assign switcher).
   const { user, role, departmentId, authedFetch, signOut } = useAuth();
@@ -84,7 +86,7 @@ export default function App() {
   }, [role, activeTab]);
 
   // Real alerts derived from live issue events (no mock data).
-  const alerts = useMemo(() => deriveAlerts(issues), [issues]);
+  const alerts = useMemo(() => deriveAlerts(issues, user?.uid), [issues, user?.uid]);
   const unreadCount = useMemo(
     () => alerts.reduce((n, a) => (readAlertIds.has(a.id) ? n : n + 1), 0),
     [alerts, readAlertIds]
@@ -205,58 +207,34 @@ export default function App() {
     refreshIssues();
   };
 
-  const handleUpdateStatus = (issueId: string, nextStatus: CivicIssue['status'], proofUrl?: string) => {
-    setIssues((prev) =>
-      prev.map((issue) => {
-        if (issue.id === issueId) {
-          const updatedTimeline = [...(issue.timeline || [])];
-          const updatedCaseLog = [...(issue.caseLog || [])];
-          const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-          // Determine status modifications
-          let agentStatus = issue.agentStatus;
-          if (nextStatus === 'IN_PROGRESS') {
-            agentStatus = 'Setu: Acknowledged by RMC. Dispatch crew assigned.';
-            updatedTimeline.push({
-              status: 'IN_PROGRESS',
-              timestamp: timeStr,
-              date: 'Today',
-              note: 'RMC Roads crew acknowledged case, queued deployment.'
-            });
-            updatedCaseLog.push({
-              time: timeStr,
-              glyph: '✓',
-              text: 'Authority acknowledged. Dispatched task schedule.',
-              isDone: true
-            });
-          } else if (nextStatus === 'RESOLVED') {
-            agentStatus = 'Setu: Resolved. Resolution proof verified.';
-            updatedTimeline.push({
-              status: 'RESOLVED',
-              timestamp: timeStr,
-              date: 'Today',
-              note: 'RMC uploaded completion photographs. Line cleared.'
-            });
-            updatedCaseLog.push({
-              time: timeStr,
-              glyph: '✓',
-              text: 'Case marked RESOLVED with photographic verification.',
-              isDone: true
-            });
-          }
-
-          return {
-            ...issue,
-            status: nextStatus,
-            agentStatus,
-            mediaUrl: proofUrl || issue.mediaUrl,
-            timeline: updatedTimeline,
-            caseLog: updatedCaseLog
-          };
-        }
-        return issue;
-      })
-    );
+  const handleUpdateStatus = async (
+    issueId: string,
+    nextStatus: CivicIssue['status'],
+    proofUrl?: string,
+    proofMediaType?: 'photo' | 'video',
+  ) => {
+    // Persist the transition server-side (status history, proof, Setu comment,
+    // case log). The server is authoritative; we merge its returned issue, then
+    // reconcile the full feed so the resolution + derived alert are consistent.
+    try {
+      const res = await authedFetch(`/api/issues/${issueId}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: nextStatus, proofUrl, proofMediaType }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Status update failed.');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data.issue) {
+        setIssues((prev) => prev.map((i) => (i.id === issueId ? { ...i, ...data.issue } : i)));
+      }
+    } catch (err) {
+      console.error('Status update failed:', err);
+    }
+    // Reconcile against the server (embedded comments/caseLog, dispatch state).
+    refreshIssues();
   };
 
   // "You" tab — the signed-in user's own reports, by verified uid.
@@ -271,11 +249,12 @@ export default function App() {
   });
 
   return (
-    <div className="w-full h-screen bg-paper flex justify-center overflow-hidden">
+    <div className="w-full h-app bg-paper flex justify-center overflow-hidden">
       {/* Main Single Column Container */}
-      <div className="w-full max-w-[430px] h-screen bg-white relative flex flex-col md:shadow-[0_0_24px_rgba(22,24,29,0.06)] md:border-x md:border-hairline overflow-hidden">
-        {/* Brand App Header + auth chip (role is verified, never self-assigned) */}
-        <header className="pt-5 px-6 pb-2.5 border-b border-hairline flex justify-between items-center shrink-0 bg-white">
+      <div className="w-full max-w-[430px] h-app bg-white relative flex flex-col md:shadow-[0_0_24px_rgba(22,24,29,0.06)] md:border-x md:border-hairline overflow-hidden">
+        {/* Brand App Header + auth chip (role is verified, never self-assigned).
+            pt-safe-header keeps content clear of the iOS notch/status bar. */}
+        <header className="pt-safe-header px-6 pb-2.5 border-b border-hairline flex justify-between items-center shrink-0 bg-white">
           <h1 className="text-xl font-display font-black tracking-tighter text-ink uppercase">
             Samadhan
           </h1>
@@ -290,7 +269,7 @@ export default function App() {
                 {(user.email && user.email.split('@')[0]) || 'Citizen'}
               </span>
               <button
-                onClick={() => signOut()}
+                onClick={() => setShowSignOutConfirm(true)}
                 title="Sign out"
                 className="p-1 rounded-full hover:bg-zinc-100 text-ink-soft"
               >
@@ -307,8 +286,9 @@ export default function App() {
           )}
         </header>
 
-        {/* Scrollable/Interactive Internal View Body */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-paper pb-20 relative">
+        {/* Scrollable/Interactive Internal View Body. pb-body-nav reserves the
+            nav height + home-indicator inset so content never hides behind it. */}
+        <div className="flex-1 flex flex-col overflow-hidden bg-paper pb-body-nav relative">
           
           {/* Citizen experience is available to EVERYONE (incl. authority). The
               Authority queue is an EXTRA view, never a replacement. */}
@@ -378,7 +358,7 @@ export default function App() {
 
           {/* Bottom navigation — shown for everyone (citizen experience). The
               Authority tab is appended only for verified authority users. */}
-          <nav className="absolute bottom-0 left-0 right-0 h-[64px] bg-white border-t border-hairline flex justify-around items-center px-4 pb-2 z-30 select-none shadow-[0_-2px_12px_rgba(22,24,29,0.03)]">
+          <nav className="absolute bottom-0 left-0 right-0 min-h-[64px] bg-white border-t border-hairline flex justify-around items-center px-4 pt-2 pb-safe-nav z-30 select-none shadow-[0_-2px_12px_rgba(22,24,29,0.03)]">
               <button
                 onClick={() => setActiveTab('feed')}
                 className={`flex flex-col items-center gap-1 transition-all ${
@@ -473,6 +453,17 @@ export default function App() {
             <SignInScreen
               onClose={() => setShowSignIn(false)}
               reason={signInReason}
+            />
+          )}
+
+          {showSignOutConfirm && (
+            <ConfirmDialog
+              title="Sign out of Samadhan?"
+              body="You'll need to sign in again to report issues, corroborate, or act on cases."
+              confirmLabel="Sign out"
+              tone="danger"
+              onCancel={() => setShowSignOutConfirm(false)}
+              onConfirm={() => { setShowSignOutConfirm(false); signOut(); }}
             />
           )}
         </AnimatePresence>
